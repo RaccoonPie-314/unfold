@@ -53,14 +53,31 @@ public struct EventRouter {
         }
     }
 
-    public mutating func drainForIdle() -> [Int] { ledger.releaseAll() }
+    /// Releases everything the ledger holds and makes the matcher forget the prefix with it.
+    ///
+    /// Added during Task 4's review: releasing only the ledger left `matcher.buffer` holding the
+    /// prefix the drain had just handed back, so finishing the trigger expanded it a second time --
+    /// the app received the re-posted "ad" *and* the full replacement, duplicating the user's text.
+    /// Discarding `matcher.reset()`'s release actions is deliberate: those characters are the same
+    /// ones `releaseAll()` already returned to the caller.
+    public mutating func drainForIdle() -> [Int] {
+        let released = ledger.releaseAll()
+        matcher.reset()
+        return released
+    }
 
-    public mutating func drainForFocusChange() -> [Int] { ledger.releaseAll() }
+    public mutating func drainForFocusChange() -> [Int] {
+        let released = ledger.releaseAll()
+        matcher.reset()
+        return released
+    }
 
-    /// Forgets the half-typed trigger and the word boundary together. The coordinator drains and
-    /// re-posts before calling this (Plan 1 residuals R3 and R4), so nothing is lost here -- but the
-    /// next field genuinely starts clean, which is why a trigger typed as the very first keystroke
-    /// after a focus change needs one more character before it expands.
+    /// Forgets the half-typed trigger and the word boundary together. The drains are now
+    /// self-contained -- each clears the matcher alongside the ledger -- so a coordinator no longer
+    /// has to remember a `reset()` after every drain to avoid re-expanding a released prefix
+    /// (Plan 1 residuals R3 and R4). The next field genuinely starts clean, which is why a trigger
+    /// typed as the very first keystroke after a focus change needs one more character before it
+    /// expands.
     public mutating func reset() {
         matcher.reset()
         ledger.clear()

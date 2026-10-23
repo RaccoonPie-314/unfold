@@ -85,6 +85,48 @@ final class EventRouterTests: XCTestCase {
         XCTAssertEqual(subject.bufferedCount, 0)
     }
 
+    func testADrainForIdleLeavesTheMatcherUnableToReExpandTheReleasedPrefix() {
+        let addr = combo("addr", "123 Main St")
+        var subject = router([addr])
+        _ = subject.route(.keyDown("a", 0), flags: [])
+        _ = subject.route(.keyDown("d", 2), flags: [])
+
+        XCTAssertEqual(subject.drainForIdle(), [0, 2])
+
+        // The app has already received "ad" from the drain. Finishing the trigger must not
+        // now expand it -- the replacement would duplicate the prefix the ledger gave back.
+        XCTAssertEqual(subject.route(.keyDown("d", 2), flags: []), .passThrough)
+        XCTAssertEqual(subject.route(.keyDown("r", 15), flags: []), .passThrough)
+        XCTAssertEqual(subject.route(.keyDown(" ", 49), flags: []), .passThrough,
+                       "a drain must discard the matcher's prefix, not keep it live")
+    }
+
+    func testADrainForFocusChangeLeavesTheMatcherUnableToReExpandTheReleasedPrefix() {
+        var subject = router([combo("add", "address")])
+        _ = subject.route(.keyDown("a", 0), flags: [])
+        _ = subject.route(.keyDown("d", 2), flags: [])
+
+        XCTAssertEqual(subject.drainForFocusChange(), [0, 2])
+
+        // Same duplication bug via the focus-change drain: "d, space" after the drained
+        // "ad" would expand "add" a second time.
+        XCTAssertEqual(subject.route(.keyDown("d", 2), flags: []), .passThrough)
+        XCTAssertEqual(subject.route(.keyDown(" ", 49), flags: []), .passThrough,
+                       "a drain must discard the matcher's prefix, not keep it live")
+    }
+
+    func testABreakReleasesThreeBufferedKeysInOldestFirstOrder() {
+        var subject = router([combo("addr", "123 Main St")])
+        _ = subject.route(.keyDown("a", 0), flags: [])
+        _ = subject.route(.keyDown("d", 2), flags: [])
+        _ = subject.route(.keyDown("d", 2), flags: [])
+
+        // Three leading emits -- the shape of a buffered prefix whose successor also needs
+        // releasing. The duplicated keycode 2 pins true FIFO position order, not a set.
+        XCTAssertEqual(subject.route(.keyDown("z", 44), flags: []), .releaseThenPass([0, 2, 2]))
+        XCTAssertEqual(subject.bufferedCount, 0)
+    }
+
     func testExpansionCarriesNoReleaseBecauseTheTriggerWasConsumed() {
         let add = combo("add", "address")
         var subject = router([add])
