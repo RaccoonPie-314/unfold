@@ -6,9 +6,13 @@ let package = Package(
     platforms: [.macOS(.v14)],
     targets: [
         .target(name: "UnfoldEngine"),
+        .target(
+            name: "UnfoldMac",
+            dependencies: ["UnfoldEngine"]
+        ),
         .executableTarget(
             name: "Unfold",
-            dependencies: ["UnfoldEngine"]
+            dependencies: ["UnfoldEngine", "UnfoldMac"]
         ),
         .executableTarget(
             name: "UnfoldCTL",
@@ -17,6 +21,10 @@ let package = Package(
         .testTarget(
             name: "UnfoldEngineTests",
             dependencies: ["UnfoldEngine"]
+        ),
+        .testTarget(
+            name: "UnfoldMacTests",
+            dependencies: ["UnfoldMac", "UnfoldEngine"]
         ),
     ],
     // Language mode 5 is deliberate: CGEventTap callbacks are C function pointers and
