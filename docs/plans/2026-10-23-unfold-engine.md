@@ -157,7 +157,13 @@ final class TemplateTests: XCTestCase {
 
     func testSerializeEscapesLiteralBraces() throws {
         let parts: [Part] = [.text("use {{braces}} here")]
-        XCTAssertEqual(Template.serialize(parts), #"\{{braces}} here"#)
+        XCTAssertEqual(Template.serialize(parts), #"use \{{braces}} here"#)
+    }
+
+    func testPlaceholderNameWithBracesIsRejected() {
+        XCTAssertThrowsError(try Template.parse("a {{x{y}} b")) { error in
+            XCTAssertEqual(error as? TemplateError, .invalidPlaceholderName("x{y"))
+        }
     }
 }
 ```
@@ -299,7 +305,7 @@ public enum Template {
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `swift test --filter TemplateTests`
-Expected: PASS, 10 tests, 0 failures.
+Expected: PASS, 11 tests, 0 failures.
 
 - [ ] **Step 7: Run the whole suite to verify nothing regressed**
 
