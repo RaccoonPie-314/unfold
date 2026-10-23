@@ -127,7 +127,13 @@ reject synthetic paste.
 a temporary file and rename. No SQLite, so the file stays diffable, syncable by the user's own
 cloud folder, and importable from Beeftext JSON.
 
-`Part` uses the tagged-union shape that `Codable` synthesizes for an enum with associated values:
+`Part` is a flat tagged union, emitted and read by a **hand-written** `Codable` conformance in an
+extension. Synthesized conformance for an enum with associated values produces
+`{"text":{"_0":"I love "}}` instead, which no one would hand-edit and which Beeftext's importer would
+not recognize; that was discovered during implementation, and the conformance was written explicitly
+to keep the shape below authoritative. A payload carrying neither `text` nor `placeholder` throws
+`DecodingError.dataCorrupted` naming both keys, which surfaces as `StoreError.unreadable`; if both
+were somehow present, `text` wins deterministically.
 
 ```json
 {

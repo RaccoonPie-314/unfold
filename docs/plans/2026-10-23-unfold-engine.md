@@ -1072,7 +1072,11 @@ public struct Store {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `swift test --filter StoreTests`
-Expected: PASS, 7 tests, 0 failures.
+Expected: PASS, 11 tests, 0 failures. Two cases beyond the seven here were added during review: one
+pinning atomic write and key sorting (both deletable with the original seven still green), and one
+decoding this task's own JSON snippet literally -- the only test that pins the hand-editing promise.
+That second case required `Part` to gain a hand-written `Codable` conformance in `Models.swift`,
+because synthesized conformance emits `{"text":{"_0":...}}`, not the flat shape documented above.
 
 - [ ] **Step 5: Run the whole suite**
 
