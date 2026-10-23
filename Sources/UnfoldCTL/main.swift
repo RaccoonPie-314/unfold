@@ -8,11 +8,14 @@ func expandTilde(_ path: String) -> String {
     return path
 }
 
-func combosURL(from arguments: [String]) -> URL {
+/// The combos path, plus whether the caller named one. `--combos <path>` that does not exist is a
+/// typo or a moved file, not a first run: the tool has to fail rather than report an empty library
+/// and exit 0 on a CI gate. No flag at all still means the default location on a first run.
+func combosURL(from arguments: [String]) -> (url: URL, explicitlyRequested: Bool) {
     if let flag = arguments.firstIndex(of: "--combos"), flag + 1 < arguments.count {
-        return URL(fileURLWithPath: expandTilde(arguments[flag + 1]))
+        return (URL(fileURLWithPath: expandTilde(arguments[flag + 1])), true)
     }
-    return Store.defaultURL()
+    return (Store.defaultURL(), false)
 }
 
 func describe(_ action: MatchAction, for character: Character) -> String {
@@ -37,7 +40,12 @@ guard CommandLine.arguments.count >= 3 else {
 
 let command = CommandLine.arguments[1]
 let argument = CommandLine.arguments[2]
-let store = Store(url: combosURL(from: CommandLine.arguments))
+let combos = combosURL(from: CommandLine.arguments)
+let store = Store(url: combos.url)
+
+if combos.explicitlyRequested, !FileManager.default.fileExists(atPath: store.url.path) {
+    fail("no such file: \(store.url.path)", code: 66)
+}
 
 let file: CombosFile
 do {
