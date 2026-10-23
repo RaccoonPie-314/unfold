@@ -2,6 +2,8 @@ import Foundation
 
 public struct Matcher {
     private let index: TriggerIndex
+    /// The swallowed prefix still held back from the document: the trailing run of
+    /// characters that could still complete a trigger, or "" when nothing is pending.
     public private(set) var buffer: String = ""
 
     /// The last character known to have reached the target document. `nil` means
@@ -22,6 +24,16 @@ public struct Matcher {
     public mutating func reset() {
         buffer = ""
         lastEmitted = nil
+    }
+
+    /// Emits whatever is buffered without expanding. The adapter calls this when typing
+    /// goes idle, when focus changes, and when the user pauses expansion, so a swallowed
+    /// prefix can never be lost.
+    public mutating func releasePending() -> [MatchAction] {
+        let pending = buffer
+        buffer = ""
+        if let last = pending.last { lastEmitted = last }
+        return pending.map { MatchAction.emit($0) }
     }
 
     private var atBoundary: Bool {

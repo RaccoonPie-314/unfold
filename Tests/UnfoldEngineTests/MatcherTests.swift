@@ -93,6 +93,81 @@ final class MatcherTests: XCTestCase {
         matcher.reset()
         XCTAssertEqual(matcher.buffer, "")
     }
+
+    func testPartialPrefixReleasedOnDelimiter() {
+        let actions = collect("add ", from: Matcher(index: TriggerIndex(combos: [makeCombo("address")])))
+
+        XCTAssertEqual(actions, [
+            .swallow, .swallow, .swallow,
+            .emit("a"), .emit("d"), .emit("d"), .emit(" "),
+        ])
+    }
+
+    func testTypingAddedNeverFiresTheAddTrigger() {
+        let actions = collect("added ", from: Matcher(index: TriggerIndex(combos: [makeCombo("add", replacement: "address")])))
+
+        XCTAssertEqual(actions, [
+            .swallow, .swallow, .swallow,
+            .emit("a"), .emit("d"), .emit("d"), .emit("e"), .emit("d"), .emit(" "),
+        ])
+    }
+
+    func testIdleReleaseEmitsBufferedCharacters() {
+        var matcher = Matcher(index: TriggerIndex(combos: [makeCombo("addr")]))
+        _ = matcher.feed("a")
+        _ = matcher.feed("d")
+        XCTAssertEqual(matcher.buffer, "ad")
+
+        XCTAssertEqual(matcher.releasePending(), [.emit("a"), .emit("d")])
+        XCTAssertEqual(matcher.buffer, "")
+    }
+
+    func testIdleReleaseKeepsTheBoundaryClosedUntilADelimiterArrives() {
+        let add = makeCombo("add")
+        var matcher = Matcher(index: TriggerIndex(combos: [add]))
+        _ = matcher.feed("a")
+        XCTAssertEqual(matcher.releasePending(), [.emit("a")])
+
+        // The released `a` reached the document, so an immediately following `a` cannot
+        // start a trigger -- rule 6. A delimiter has to reopen the boundary first.
+        XCTAssertEqual(matcher.feed("a"), [.emit("a")])
+        _ = matcher.feed(" ")
+        _ = matcher.feed("a")
+        _ = matcher.feed("d")
+        _ = matcher.feed("d")
+        XCTAssertEqual(matcher.feed(" "), [.expand(add), .emit(" ")])
+    }
+
+    func testNothingIsLostAcrossAnExpansionFollowedByAnotherTrigger() {
+        let addr = makeCombo("addr", replacement: "123 Main St")
+        let add = makeCombo("add", replacement: "address")
+        var matcher = Matcher(index: TriggerIndex(combos: [addr, add]))
+
+        let actions = collect("addr add ", from: matcher)
+
+        XCTAssertEqual(actions, [
+            .swallow, .swallow, .swallow, .swallow,
+            .expand(addr), .emit(" "),
+            .swallow, .swallow, .swallow,
+            .expand(add), .emit(" "),
+        ])
+    }
+
+    func testReleasedBufferKeepsTheBoundaryClosedAgainstALaterTrigger() {
+        // Releasing the swallowed `add` must leave the boundary closed, so the trailing
+        // "ed" cannot quietly start buffering the `ed` trigger and expand on the space.
+        // Deleting the `lastEmitted = pending.last` line in releaseBufferThenReconsider()
+        // makes this test expand `ed` instead of emitting every keystroke.
+        let add = makeCombo("add", replacement: "address")
+        let ed = makeCombo("ed", replacement: "e")
+        let actions = collect("added ", from: Matcher(index: TriggerIndex(combos: [add, ed])))
+
+        XCTAssertEqual(actions, [
+            .swallow, .swallow, .swallow,
+            .emit("a"), .emit("d"), .emit("d"), .emit("e"), .emit("d"), .emit(" "),
+        ])
+        XCTAssertFalse(actions.contains(.expand(ed)), "released 'add' must not let 'ed' expand")
+    }
 }
 
 /// Feeds `text` through a copy of `matcher` and returns every action produced.
