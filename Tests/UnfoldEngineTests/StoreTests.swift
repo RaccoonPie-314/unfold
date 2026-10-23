@@ -85,6 +85,52 @@ final class StoreTests: XCTestCase {
         }
     }
 
+    // A version below 1 is not an old file this build can read; it is a hand-edit that got as far
+    // as a number the writer never assigned. Only the upper bound was checked, so `0` and `-5` used
+    // to load as a normal library.
+    func testFormatVersionBelowOneIsRefused() throws {
+        for version in [0, -5] {
+            let url = directory.appendingPathComponent("combos-version-\(version).json")
+            try Data(#"{"formatVersion":\#(version),"combos":[]}"#.utf8).write(to: url)
+
+            XCTAssertThrowsError(try Store(url: url).load(), "version \(version)") { error in
+                XCTAssertEqual(
+                    error as? StoreError,
+                    .unsupportedFormatVersion(found: version, supported: CombosFile.currentFormatVersion)
+                )
+            }
+            XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "the user's file must survive")
+        }
+    }
+
+    func testVersionOneStillLoads() throws {
+        let url = directory.appendingPathComponent("combos-version-1.json")
+        try Data(#"{"formatVersion":1,"combos":[]}"#.utf8).write(to: url)
+        XCTAssertEqual(try Store(url: url).load(), CombosFile(formatVersion: 1, combos: []))
+    }
+
+    // The spec's Storage section promises a file a person can edit and import from Beeftext. Those
+    // snippets can hold parts `serialize` cannot write back unchanged, so a save has to refuse them
+    // loudly instead of rewriting the user's combo on its first round trip.
+    func testSaveRefusesPartsThePlainTextFormWouldSilentlyRewrite() throws {
+        let lossy = Combo(
+            id: UUID(uuidString: "6C9C0A1E-2D2B-4E37-9A6B-5C1F0D8E3A11")!,
+            trigger: "addr",
+            label: "Hand-edited",
+            enabled: true,
+            parts: [.placeholder(.init(id: "city", options: ["Shanghai,Tokyo"]))],
+            insertion: .paste
+        )
+
+        XCTAssertThrowsError(try store().save(CombosFile(formatVersion: 1, combos: [lossy]))) { error in
+            XCTAssertEqual(error as? TemplateError, .optionContainsComma("Shanghai,Tokyo"))
+        }
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: directory.appendingPathComponent("combos.json").path),
+            "a refused save must not leave a rewritten library behind"
+        )
+    }
+
     func testDefaultURLPointsAtTheDocumentedPath() {
         let url = Store.defaultURL()
         XCTAssertTrue(url.path.hasSuffix("io.github.raccoonpie314.unfold/combos.json"), url.path)

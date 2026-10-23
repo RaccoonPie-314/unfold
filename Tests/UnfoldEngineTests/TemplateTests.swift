@@ -77,4 +77,45 @@ final class TemplateTests: XCTestCase {
         XCTAssertEqual(Template.serialize(parts), #"C:\\{{x}}"#)
         XCTAssertEqual(try Template.parse(Template.serialize(parts)), parts)
     }
+
+    // `serialize` writes the plain-text form without escaping `:` or `,`, so these parts survive
+    // decoding but not a save/reload: `["a,b"]` comes back as two options, `has:colon` as id `has`
+    // plus option `colon`, and `.text("")` vanishes. The spec requires that to be reported rather
+    // than silently mangled, which is `validate`'s whole job.
+    func testValidateRejectsAPlaceholderIdContainingAColon() {
+        XCTAssertThrowsError(try Template.validate([.placeholder(.init(id: "has:colon", options: []))])) { error in
+            XCTAssertEqual(error as? TemplateError, .invalidPlaceholderName("has:colon"))
+        }
+    }
+
+    func testValidateRejectsAPlaceholderIdContainingBraces() {
+        for id in ["{city}", "city}", "a{b"] {
+            XCTAssertThrowsError(try Template.validate([.placeholder(.init(id: id, options: ["x"]))])) { error in
+                XCTAssertEqual(error as? TemplateError, .invalidPlaceholderName(id))
+            }
+        }
+    }
+
+    func testValidateRejectsAnOptionContainingAComma() {
+        XCTAssertThrowsError(
+            try Template.validate([.placeholder(.init(id: "city", options: ["Shanghai,Tokyo"]))])
+        ) { error in
+            XCTAssertEqual(error as? TemplateError, .optionContainsComma("Shanghai,Tokyo"))
+        }
+    }
+
+    func testValidateRejectsAnEmptyTextPart() {
+        XCTAssertThrowsError(try Template.validate([.text("I love "), .text(""), .text(" city")])) { error in
+            XCTAssertEqual(error as? TemplateError, .emptyTextPart)
+        }
+    }
+
+    func testValidateAcceptsEveryPartSerializeRoundTrips() throws {
+        try Template.validate([
+            .text("I love "),
+            .placeholder(.init(id: "city", options: ["Shanghai", "Tokyo"])),
+            .text(" restaurant"),
+            .placeholder(.init(id: "name", options: [])),
+        ])
+    }
 }

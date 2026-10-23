@@ -5,6 +5,8 @@ public enum TemplateError: Error, Equatable, CustomStringConvertible {
     case emptyPlaceholderName
     case invalidPlaceholderName(String)
     case duplicatePlaceholderName(String)
+    case optionContainsComma(String)
+    case emptyTextPart
 
     public var description: String {
         switch self {
@@ -16,11 +18,36 @@ public enum TemplateError: Error, Equatable, CustomStringConvertible {
             return "placeholder name `\(name)` may not contain braces or a colon"
         case .duplicatePlaceholderName(let name):
             return "placeholder name `\(name)` is used more than once in this combo"
+        case .optionContainsComma(let option):
+            return "option `\(option)` contains a comma, which the plain-text form cannot round-trip"
+        case .emptyTextPart:
+            return "a text part may not be empty; the plain-text form drops it"
         }
     }
 }
 
 public enum Template {
+    /// Refuses the parts `serialize` cannot write and read back identically, so a hand-edited or
+    /// Beeftext-imported combo is reported instead of being silently rewritten on its first save.
+    ///
+    /// `serialize` interpolates an id and its options without escaping, so an id carrying a `:` or a
+    /// brace and an option carrying a comma both come back as something else, and an empty text part
+    /// vanishes entirely -- `parse` never produces one. A part that survives the plain-text form is
+    /// accepted here; that is the same rule the spec states for the editor.
+    public static func validate(_ parts: [Part]) throws {
+        for part in parts {
+            switch part {
+            case .text(let value):
+                if value.isEmpty { throw TemplateError.emptyTextPart }
+            case .placeholder(let placeholder):
+                try validateName(placeholder.id)
+                for option in placeholder.options where option.contains(",") {
+                    throw TemplateError.optionContainsComma(option)
+                }
+            }
+        }
+    }
+
     public static func parse(_ text: String) throws -> [Part] {
         let characters = Array(text)
         var parts: [Part] = []
@@ -36,9 +63,11 @@ public enum Template {
         }
 
         while index < characters.count {
-            // Two escape rules, in this order. A backslash pair is one literal
-            // backslash and is consumed first, so `\\{{` reads as a backslash
-            // followed by a placeholder instead of the `\{{` brace escape.
+            // Two escape rules, and they are disjoint rather than ordered: the first needs a
+            // backslash followed by a backslash, the second a backslash followed by two braces, so
+            // no position can match both and swapping them changes nothing. `\\{{` reads as one
+            // literal backslash plus a placeholder because the first rule takes the pair, not
+            // because it is tested first.
             if characters[index] == "\\", index + 1 < characters.count, characters[index + 1] == "\\" {
                 literal.append("\\")
                 index += 2
