@@ -15,9 +15,7 @@ final class CombosFileTests: XCTestCase {
                         .text("I love "),
                         .placeholder(.init(
                             id: "city",
-                            prompt: "City",
-                            options: ["Shanghai", "Tokyo"],
-                            defaultValue: ""
+                            options: ["Shanghai", "Tokyo"]
                         )),
                         .text(" restaurant"),
                     ],

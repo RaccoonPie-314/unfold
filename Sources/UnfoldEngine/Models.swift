@@ -7,15 +7,11 @@ public enum InsertionMode: String, Codable, Sendable {
 
 public struct Placeholder: Codable, Equatable, Sendable {
     public var id: String
-    public var prompt: String
     public var options: [String]
-    public var defaultValue: String
 
-    public init(id: String, prompt: String, options: [String], defaultValue: String) {
+    public init(id: String, options: [String]) {
         self.id = id
-        self.prompt = prompt
         self.options = options
-        self.defaultValue = defaultValue
     }
 }
 
