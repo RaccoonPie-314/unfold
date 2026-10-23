@@ -122,6 +122,22 @@ final class MatcherTests: XCTestCase {
         XCTAssertEqual(matcher.buffer, "")
     }
 
+    func testIdleReleaseNeverExpandsACompleteTrigger() {
+        // Rule 7, second half: releasing buffered characters is verbatim emission, never
+        // expansion -- expansion requires a delimiter. Idling on the *complete* trigger
+        // "add" must still emit a, d, d rather than fire it.
+        let add = makeCombo("add")
+        var matcher = Matcher(index: TriggerIndex(combos: [add]))
+        _ = matcher.feed("a")
+        _ = matcher.feed("d")
+        _ = matcher.feed("d")
+        XCTAssertEqual(matcher.buffer, "add")
+
+        let released = matcher.releasePending()
+        XCTAssertEqual(released, [.emit("a"), .emit("d"), .emit("d")])
+        XCTAssertFalse(released.contains(.expand(add)), "releasePending must never expand")
+    }
+
     func testIdleReleaseKeepsTheBoundaryClosedUntilADelimiterArrives() {
         let add = makeCombo("add")
         var matcher = Matcher(index: TriggerIndex(combos: [add]))
