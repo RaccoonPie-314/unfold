@@ -1,0 +1,131 @@
+import CoreGraphics
+import UnfoldEngine
+import XCTest
+@testable import UnfoldMac
+
+private func combo(_ trigger: String, _ replacement: String) -> Combo {
+    Combo(id: UUID(), trigger: trigger, label: trigger, enabled: true,
+          parts: [.text(replacement)], insertion: .paste)
+}
+
+final class EventRouterTests: XCTestCase {
+    private func router(_ combos: [Combo]) -> EventRouter {
+        EventRouter(matcher: Matcher(index: TriggerIndex(combos: combos)))
+    }
+
+    func testAnUnrelatedKeyPassesThrough() {
+        var subject = router([combo("addr", "123 Main St")])
+        XCTAssertEqual(subject.route(.keyDown("z", 44), flags: []), .passThrough)
+        XCTAssertEqual(subject.bufferedCount, 0)
+    }
+
+    func testATriggerPrefixIsSwallowedAndRecorded() {
+        var subject = router([combo("addr", "123 Main St")])
+        XCTAssertEqual(subject.route(.keyDown("a", 0), flags: []), .swallowAndRecord)
+        XCTAssertEqual(subject.bufferedCount, 1)
+    }
+
+    func testACompleteTriggerStillWaitsForADelimiter() {
+        var subject = router([combo("add", "address")])
+        _ = subject.route(.keyDown("a", 0), flags: [])
+        _ = subject.route(.keyDown("d", 2), flags: [])
+        XCTAssertEqual(subject.route(.keyDown("d", 2), flags: []), .swallowAndRecord)
+    }
+
+    func testADelimiterExpandsAndPassesItselfThrough() {
+        let add = combo("add", "address")
+        var subject = router([add])
+        _ = subject.route(.keyDown("a", 0), flags: [])
+        _ = subject.route(.keyDown("d", 2), flags: [])
+        _ = subject.route(.keyDown("d", 2), flags: [])
+
+        XCTAssertEqual(subject.route(.keyDown(" ", 49), flags: []), .expandThenPass(add, []))
+        XCTAssertEqual(subject.bufferedCount, 0)
+    }
+
+    func testABrokenPrefixReleasesWhatItAteBeforePassingTheCurrentKey() {
+        var subject = router([combo("addr", "123 Main St")])
+        _ = subject.route(.keyDown("a", 0), flags: [])
+        _ = subject.route(.keyDown("d", 2), flags: [])
+
+        XCTAssertEqual(subject.route(.keyDown("z", 44), flags: []), .releaseThenPass([0, 2]))
+        XCTAssertEqual(subject.bufferedCount, 0)
+    }
+
+    func testABlockingModifierReleasesTheBufferAndPassesTheEvent() {
+        var subject = router([combo("addr", "123 Main St")])
+        _ = subject.route(.keyDown("a", 0), flags: [])
+
+        XCTAssertEqual(subject.route(.keyDown("d", 2), flags: .maskCommand), .releaseThenPass([0]))
+    }
+
+    func testKeyUpForASwallowedKeyIsSwallowedTooButUnrelatedKeyUpPasses() {
+        var subject = router([combo("addr", "123 Main St")])
+        _ = subject.route(.keyDown("a", 0), flags: [])
+
+        XCTAssertEqual(subject.route(.keyUp(0), flags: []), .swallowAndRecord)
+        XCTAssertEqual(subject.route(.keyUp(6), flags: []), .passThrough)
+    }
+
+    func testIdleDrainReturnsTheBufferInOrderAndClearsIt() {
+        var subject = router([combo("addr", "123 Main St")])
+        _ = subject.route(.keyDown("a", 0), flags: [])
+        _ = subject.route(.keyDown("d", 2), flags: [])
+
+        XCTAssertEqual(subject.drainForIdle(), [0, 2])
+        XCTAssertEqual(subject.bufferedCount, 0)
+        XCTAssertEqual(subject.drainForIdle(), [])
+    }
+
+    func testFocusChangeDrainBehavesLikeIdleDrain() {
+        var subject = router([combo("addr", "123 Main St")])
+        _ = subject.route(.keyDown("a", 0), flags: [])
+
+        XCTAssertEqual(subject.drainForFocusChange(), [0])
+        XCTAssertEqual(subject.bufferedCount, 0)
+    }
+
+    func testExpansionCarriesNoReleaseBecauseTheTriggerWasConsumed() {
+        let add = combo("add", "address")
+        var subject = router([add])
+        _ = subject.route(.keyDown("a", 0), flags: [])
+        _ = subject.route(.keyDown("d", 2), flags: [])
+        _ = subject.route(.keyDown("d", 2), flags: [])
+        XCTAssertEqual(subject.route(.keyDown(" ", 49), flags: []), .expandThenPass(add, []))
+    }
+
+    func testNonKeyEventsPassThrough() {
+        var subject = router([combo("addr", "123 Main St")])
+        XCTAssertEqual(subject.route(.other, flags: []), .passThrough)
+    }
+
+    func testAnUninterpretableKeyReleasesTheBufferRatherThanStrandingIt() {
+        var subject = router([combo("addr", "123 Main St")])
+        _ = subject.route(.keyDown("a", 0), flags: [])
+        _ = subject.route(.keyDown("d", 2), flags: [])
+
+        XCTAssertEqual(subject.route(.other, flags: []), .releaseThenPass([0, 2]))
+        XCTAssertEqual(subject.bufferedCount, 0)
+    }
+
+    func testAnExpandedTriggerLeavesNothingAwaitingKeyUp() {
+        var subject = router([combo("add", "address")])
+        _ = subject.route(.keyDown("a", 0), flags: [])
+        _ = subject.route(.keyDown("d", 2), flags: [])
+        _ = subject.route(.keyDown("d", 2), flags: [])
+        _ = subject.route(.keyDown(" ", 49), flags: [])
+
+        XCTAssertEqual(subject.route(.keyUp(2), flags: []), .passThrough,
+                       "the keyup of an expanded trigger must not be swallowed")
+    }
+
+    func testResetForgetsTheBufferAndThePendingKeyups() {
+        var subject = router([combo("addr", "123 Main St")])
+        _ = subject.route(.keyDown("a", 0), flags: [])
+        subject.reset()
+
+        XCTAssertEqual(subject.bufferedCount, 0)
+        XCTAssertEqual(subject.route(.keyUp(0), flags: []), .passThrough,
+                       "a keyup for an event the new field never started must not be eaten")
+    }
+}
