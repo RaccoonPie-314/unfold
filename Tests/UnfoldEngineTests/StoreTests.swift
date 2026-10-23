@@ -1,0 +1,130 @@
+import XCTest
+@testable import UnfoldEngine
+
+final class StoreTests: XCTestCase {
+    private var directory: URL!
+
+    override func setUpWithError() throws {
+        directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("unfold-store-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    private func store(in subpath: String? = nil) -> Store {
+        let url = subpath.map { directory.appendingPathComponent($0) } ?? directory.appendingPathComponent("combos.json")
+        return Store(url: url)
+    }
+
+    func testMissingFileLoadsAsAnEmptyLibrary() throws {
+        let loaded = try store().load()
+        XCTAssertEqual(loaded, CombosFile(formatVersion: CombosFile.currentFormatVersion, combos: []))
+    }
+
+    func testSaveThenLoadRoundTrips() throws {
+        let file = CombosFile(
+            formatVersion: CombosFile.currentFormatVersion,
+            combos: [
+                Combo(
+                    id: UUID(uuidString: "6C9C0A1E-2D2B-4E37-9A6B-5C1F0D8E3A11")!,
+                    trigger: "addr",
+                    label: "Home address",
+                    enabled: true,
+                    parts: [
+                        .text("I love "),
+                        .placeholder(.init(id: "city", options: ["Shanghai", "Tokyo"])),
+                        .text(" restaurant"),
+                    ],
+                    insertion: .paste
+                )
+            ]
+        )
+
+        try store().save(file)
+        XCTAssertEqual(try store().load(), file)
+    }
+
+    func testSavedFileIsPrettyPrintedSoUsersCanDiffIt() throws {
+        try store().save(CombosFile(formatVersion: 1, combos: [makeCombo("add")]))
+        let text = try String(contentsOf: directory.appendingPathComponent("combos.json"), encoding: .utf8)
+
+        XCTAssertTrue(text.contains("\n"), "a single-line file is not diffable")
+        XCTAssertTrue(text.contains("\"trigger\""))
+    }
+
+    func testSaveCreatesTheApplicationSupportSubdirectory() throws {
+        let nested = store(in: "Unfold/combos.json")
+        try nested.save(CombosFile(formatVersion: 1, combos: []))
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: nested.url.path))
+    }
+
+    func testCorruptFileThrowsWithoutDeletingIt() throws {
+        let url = directory.appendingPathComponent("combos.json")
+        try Data("this is not json".utf8).write(to: url)
+
+        XCTAssertThrowsError(try store().load()) { error in
+            guard case StoreError.unreadable = error else {
+                return XCTFail("expected unreadable, got \(error)")
+            }
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "the user's file must survive a failed load")
+    }
+
+    func testFutureFormatVersionIsRefused() throws {
+        try store().save(CombosFile(formatVersion: 99, combos: []))
+
+        XCTAssertThrowsError(try store().load()) { error in
+            XCTAssertEqual(
+                error as? StoreError,
+                .formatVersionTooNew(found: 99, supported: CombosFile.currentFormatVersion)
+            )
+        }
+    }
+
+    func testDefaultURLPointsAtTheDocumentedPath() {
+        let url = Store.defaultURL()
+        XCTAssertTrue(url.path.hasSuffix("io.github.raccoonpie314.unfold/combos.json"), url.path)
+    }
+
+    // The plan's contract promises an atomic write and sorted keys, but none of its seven
+    // cases observes either. Sorted keys are a byte-order fact; atomicity is pinned by the one
+    // guarantee users care about -- a save that cannot complete must leave the old library intact.
+    // A temp-file-plus-rename needs write permission on the *directory*, so a read-only
+    // directory makes it fail loudly. An in-place rewrite would happily clobber the file.
+    func testSaveThatCannotCompleteLeavesTheExistingLibraryIntact() throws {
+        try XCTSkipIf(geteuid() == 0, "root ignores directory permissions, so this cannot pin atomicity")
+
+        let url = directory.appendingPathComponent("combos.json")
+        let store = Store(url: url)
+        let original = CombosFile(formatVersion: 1, combos: [makeCombo("one")])
+        try store.save(original)
+
+        let fileManager = FileManager.default
+        try fileManager.setAttributes([.posixPermissions: 0o555], ofItemAtPath: directory.path)
+        defer { try? fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path) }
+
+        XCTAssertThrowsError(try store.save(CombosFile(formatVersion: 1, combos: [makeCombo("two")])))
+
+        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
+        XCTAssertTrue(fileManager.fileExists(atPath: url.path), "a failed save must not delete the library")
+        XCTAssertEqual(try store.load(), original, "a failed save must not truncate or clobber the library")
+    }
+
+    func testSaveSortsKeysSoRewritesDoNotProduceSpuriousDiffs() throws {
+        let url = directory.appendingPathComponent("combos.json")
+        let file = CombosFile(formatVersion: 1, combos: [makeCombo("add")])
+        try Store(url: url).save(file)
+        let text = try String(contentsOf: url, encoding: .utf8)
+
+        let combos = text.range(of: "\"combos\"")!.lowerBound
+        let formatVersion = text.range(of: "\"formatVersion\"")!.lowerBound
+        XCTAssertLessThan(combos, formatVersion, ".sortedKeys puts `combos` before `formatVersion`")
+
+        try Store(url: url).save(file)
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), text)
+    }
+}
