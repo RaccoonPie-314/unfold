@@ -127,4 +127,92 @@ final class StoreTests: XCTestCase {
         try Store(url: url).save(file)
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), text)
     }
+
+    // The spec's Storage section promises this exact hand-editable JSON; synthesized
+    // `Codable` for `Part` would instead nest the payload as {"text":{"_0":...}} and this
+    // snippet would fail to decode. Copying the spec block verbatim pins that promise.
+    func testTheSpecDocumentedSnippetDecodesIntoCombosFile() throws {
+        let specSnippet = """
+            {
+              "formatVersion": 1,
+              "combos": [
+                {
+                  "id": "6C9C0A1E-2D2B-4E37-9A6B-5C1F0D8E3A11",
+                  "trigger": "addr",
+                  "label": "Home address",
+                  "enabled": true,
+                  "parts": [
+                    { "text": "I love " },
+                    { "placeholder": { "id": "city", "options": ["Shanghai", "Tokyo"] } },
+                    { "text": " restaurant" }
+                  ],
+                  "insertion": "paste"
+                }
+              ]
+            }
+            """
+
+        let decoded = try JSONDecoder().decode(CombosFile.self, from: Data(specSnippet.utf8))
+
+        XCTAssertEqual(decoded, CombosFile(
+            formatVersion: 1,
+            combos: [
+                Combo(
+                    id: UUID(uuidString: "6C9C0A1E-2D2B-4E37-9A6B-5C1F0D8E3A11")!,
+                    trigger: "addr",
+                    label: "Home address",
+                    enabled: true,
+                    parts: [
+                        .text("I love "),
+                        .placeholder(.init(id: "city", options: ["Shanghai", "Tokyo"])),
+                        .text(" restaurant"),
+                    ],
+                    insertion: .paste
+                )
+            ]
+        ))
+    }
+
+    func testSavedFileUsesTheFlatSpecShapeWithNoSynthesizedWrapper() throws {
+        let file = CombosFile(
+            formatVersion: CombosFile.currentFormatVersion,
+            combos: [
+                Combo(
+                    id: UUID(uuidString: "6C9C0A1E-2D2B-4E37-9A6B-5C1F0D8E3A11")!,
+                    trigger: "addr",
+                    label: "Home address",
+                    enabled: true,
+                    parts: [
+                        .text("I love "),
+                        .placeholder(.init(id: "city", options: ["Shanghai", "Tokyo"])),
+                        .text(" restaurant"),
+                    ],
+                    insertion: .paste
+                )
+            ]
+        )
+
+        try store().save(file)
+        let text = try String(contentsOf: directory.appendingPathComponent("combos.json"), encoding: .utf8)
+
+        XCTAssertFalse(text.contains("_0"), "the file must not carry the synthesized nested wrapper")
+
+        // Assert the flat shape structurally: each part object has exactly one key --
+        // "text" holding a string, or "placeholder" holding {id, options} directly.
+        let root = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
+            "the saved file must be a JSON object"
+        )
+        let combos = try XCTUnwrap(root["combos"] as? [[String: Any]])
+        let parts = try XCTUnwrap(combos[0]["parts"] as? [[String: Any]])
+
+        XCTAssertEqual(Set(parts[0].keys), ["text"])
+        XCTAssertEqual(parts[0]["text"] as? String, "I love ")
+        XCTAssertEqual(Set(parts[1].keys), ["placeholder"])
+        let placeholder = try XCTUnwrap(parts[1]["placeholder"] as? [String: Any])
+        XCTAssertEqual(placeholder["id"] as? String, "city")
+        XCTAssertEqual(placeholder["options"] as? [String], ["Shanghai", "Tokyo"])
+        XCTAssertEqual(Set(parts[2].keys), ["text"])
+        XCTAssertEqual(parts[2]["text"] as? String, " restaurant")
+    }
 }

@@ -15,9 +15,49 @@ public struct Placeholder: Codable, Equatable, Sendable {
     }
 }
 
-public enum Part: Codable, Equatable, Sendable {
+public enum Part: Equatable, Sendable {
     case text(String)
     case placeholder(Placeholder)
+}
+
+// Hand-written so the on-disk shape is the flat form the spec documents --
+// `{"text": "I love "}` and `{"placeholder": {"id": "city", "options": [...]}}` --
+// which keeps combos.json hand-editable and Beeftext-importable. Declaring the
+// conformance here (and not on the enum) prevents `Codable` synthesis, whose
+// nested `{"text": {"_0": ...}}` wrapper would otherwise take over.
+extension Part: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case text
+        case placeholder
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .text(let value):
+            try container.encode(value, forKey: .text)
+        case .placeholder(let value):
+            try container.encode(value, forKey: .placeholder)
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        // If a hand-edited object carries both keys, `text` wins -- deterministic, and
+        // placeholder is only read when text is absent.
+        if container.contains(.text) {
+            self = .text(try container.decode(String.self, forKey: .text))
+        } else if container.contains(.placeholder) {
+            self = .placeholder(try container.decode(Placeholder.self, forKey: .placeholder))
+        } else {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "Part must be a JSON object with exactly one key: \"text\" or \"placeholder\""
+                )
+            )
+        }
+    }
 }
 
 public struct Combo: Codable, Equatable, Sendable {
