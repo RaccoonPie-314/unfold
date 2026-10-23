@@ -71,21 +71,37 @@ what a Mac expects from a resident utility.
 
 ## Matching
 
-`add` → `address` must not fire while the user is typing `added`. A longest-possible-match state
-machine over the decoded buffer decides, per keystroke:
+Amended 2026-10-23 after writing the implementation plan. The original rule -- "fire immediately,
+no trailing delimiter required" -- is broken for the spec's own example: with `add`→`address` defined
+and no `address` trigger, an immediate fire turns `added` into `addressed`. Expansion therefore
+requires a delimiter.
 
-1. Buffer equals a trigger **and** is a prefix of a longer trigger → keep buffering, fire nothing.
-   (`ad` and `add` both defined: typing `add` waits.)
-2. Buffer equals a trigger **and** no longer trigger has it as a prefix → fire immediately. No
-   trailing delimiter is required.
-3. Buffer is a prefix of some trigger but not an exact match → swallow the key, keep buffering.
-4. Buffer is no longer a prefix of anything → release the buffered characters untouched, clear.
-5. A match counts only at a word boundary: the character preceding the buffer start is absent,
-   whitespace, or punctuation.
+A trigger **word character** is a Unicode letter or digit; anything else -- space, punctuation,
+Return, Tab, emoji -- is a **delimiter**. The state machine consumes one decoded character at a time:
 
-Firing means the tap returns `nil` for those events, so the trigger never renders in the target
-document and no synthetic backspaces are ever sent. Requirement 5 is what makes `add` safe inside
-`address`, `added`, and `padding`.
+1. Word character, and `buffer + character` is a prefix of some enabled trigger, and the character
+   preceding `buffer` was a boundary → swallow the key and extend `buffer`.
+2. Word character that cannot extend `buffer`, and `buffer` was empty → pass the key through.
+3. Word character that cannot extend a non-empty `buffer` → release `buffer` verbatim, then re-decide
+   that same character from an empty buffer. Typing `added` releases `add` and emits all six
+   characters, so nothing fires.
+4. Delimiter arriving while `buffer` equals an enabled trigger → **expand**, then pass the delimiter
+   through so the typed space or punctuation still lands.
+5. Delimiter arriving while `buffer` holds a partial, non-matching prefix → release `buffer` verbatim,
+   then pass the delimiter.
+6. A match may only begin after a boundary: absent, delimiter, or a completed expansion. `padding`
+   never fires `add`, because `a` follows the word character `p`.
+7. If the user stops typing, `buffer` holds swallowed characters that have not been emitted. The
+   adapter owns an idle timer and calls `releasePending()` to emit them verbatim, so a partial prefix
+   can never be silently lost.
+
+Rule 4 means a trigger at the very end of a line expands on the next keystroke rather than on its
+own. That is the accepted cost of not firing inside words, and it is how Beeftext and espanso behave.
+
+Expansion means the tap returns `nil` for the trigger's events, so the trigger never renders in the
+target document and no synthetic backspaces are ever sent. Released characters are re-posted as
+new key events by the adapter, which is why `release` and `expand` are distinct actions in the engine's
+output.
 
 ## Insertion and the placeholder prompt
 
@@ -123,8 +139,7 @@ cloud folder, and importable from Beeftext JSON.
       "enabled": true,
       "parts": [
         { "text": "I love " },
-        { "placeholder": { "id": "city", "prompt": "City",
-                           "options": ["Shanghai", "Tokyo"], "defaultValue": "" } },
+        { "placeholder": { "id": "city", "options": ["Shanghai", "Tokyo"] } },
         { "text": " restaurant" }
       ],
       "insertion": "paste"
@@ -133,9 +148,21 @@ cloud folder, and importable from Beeftext JSON.
 }
 ```
 
-The editor offers a plain-text mode that serializes `parts` to `... I love {{city}} restaurant ...`
-and parses it back, so hand-editing stays practical without a second on-disk format. A literal
-`{{` in replacement text is escaped as `\{\{`.
+A `Placeholder` carries only `id` and `options`. Amended 2026-10-23: an earlier draft also had
+`prompt` and `defaultValue`, but the plain-text form below cannot express them, so hand-editing a
+snippet would have silently destroyed those fields. The prompt panel labels each field by its `id`.
+
+The editor's plain-text mode round-trips with `parts`:
+
+- `{{name}}` -- a placeholder with no preset options.
+- `{{name:Shanghai,Tokyo}}` -- a placeholder whose options are comma-separated. An option cannot
+  itself contain a comma; that is a v1 limitation, reported rather than silently mangled.
+- `\{{` -- an escaped literal `{{`.
+- Placeholder `id`s must be unique within one combo, contain no braces or colon, and be non-empty.
+
+A trigger must be non-empty, contain no whitespace, and end in a word character -- otherwise the
+loader rejects it with a stated reason. Triggers ending in punctuation are the "partial matching"
+case Beeftext handles per-combo, and they are out of scope for v1.
 
 ## Failure modes
 
@@ -161,7 +188,7 @@ Installing Xcode and running `sudo xcode-select -s /Applications/Xcode.app` is a
 before the test plan below is executable. `Tests/UnfoldEngineTests/CombosFileTests.swift` is
 written and correct; it cannot compile until then.
 
-- `Matcher`: exhaustive table-driven cases for all five rules above, plus multi-trigger prefix
+- `Matcher`: exhaustive table-driven cases for all seven rules above, plus multi-trigger prefix
   collisions and non-Latin layouts. Highest-value test surface in the project; needs no
   permissions.
 - `Template`: parse/serialize round-trips, escapes, adjacent placeholders, empty option lists.
