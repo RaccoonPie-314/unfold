@@ -36,6 +36,15 @@ public enum Template {
         }
 
         while index < characters.count {
+            // Two escape rules, in this order. A backslash pair is one literal
+            // backslash and is consumed first, so `\\{{` reads as a backslash
+            // followed by a placeholder instead of the `\{{` brace escape.
+            if characters[index] == "\\", index + 1 < characters.count, characters[index + 1] == "\\" {
+                literal.append("\\")
+                index += 2
+                continue
+            }
+
             if characters[index] == "\\",
                index + 2 < characters.count,
                characters[index + 1] == "{",
@@ -79,7 +88,12 @@ public enum Template {
         for part in parts {
             switch part {
             case .text(let value):
-                output += value.replacingOccurrences(of: "{{", with: "\\{{")
+                // The mirror of parse's two escape rules, in the same order: every
+                // backslash is doubled first, then `{{` is escaped, so a text part
+                // ending in a backslash cannot eat the placeholder that follows it.
+                output += value
+                    .replacingOccurrences(of: "\\", with: "\\\\")
+                    .replacingOccurrences(of: "{{", with: "\\{{")
             case .placeholder(let placeholder):
                 if placeholder.options.isEmpty {
                     output += "{{\(placeholder.id)}}"

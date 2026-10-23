@@ -56,6 +56,12 @@ final class TemplateTests: XCTestCase {
         }
     }
 
+    func testPlaceholderNameContainingBraceThrows() {
+        XCTAssertThrowsError(try Template.parse("{{a}b}}")) { error in
+            XCTAssertEqual(error as? TemplateError, .invalidPlaceholderName("a}b"))
+        }
+    }
+
     func testSerializeRoundTripsUnchanged() throws {
         let source = "I love {{city:Shanghai,Tokyo}} restaurant"
         XCTAssertEqual(try Template.serialize(Template.parse(source)), source)
@@ -64,5 +70,11 @@ final class TemplateTests: XCTestCase {
     func testSerializeEscapesLiteralBraces() throws {
         let parts: [Part] = [.text("use {{braces}} here")]
         XCTAssertEqual(Template.serialize(parts), #"use \{{braces}} here"#)
+    }
+
+    func testBackslashBeforePlaceholderSurvivesRoundTrip() throws {
+        let parts: [Part] = [.text(#"C:\"#), .placeholder(.init(id: "x", options: []))]
+        XCTAssertEqual(Template.serialize(parts), #"C:\\{{x}}"#)
+        XCTAssertEqual(try Template.parse(Template.serialize(parts)), parts)
     }
 }
