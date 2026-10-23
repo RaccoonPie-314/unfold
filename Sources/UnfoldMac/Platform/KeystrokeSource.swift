@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import UnfoldEngine
 
 /// What the tap callback should do with the event in hand, expressed at the CoreGraphics boundary:
 /// forward an event, drop it, or re-post the buffered ones first and optionally forward another.
@@ -12,8 +13,10 @@ public enum TapOutcome {
 /// Owns the system-wide CGEventTap: creation, the C callback bridge, and teardown.
 ///
 /// This type is deliberately transport-only -- every decision comes from the `handler` Task 6's
-/// coordinator supplies. It must never be started (no `start()` call, no live `CGEvent.tapCreate`)
-/// until turning a system-wide tap on is approved; that is Task 7's gate.
+/// coordinator supplies. It must never be started *for real* (no `start()` on the default
+/// `coreGraphicsTapBridge`, so no live `CGEvent.tapCreate`) until turning
+/// a system-wide tap on is approved; that is Task 7's gate. The retry tests do call `start()`, on a stand-in
+/// bridge that cannot reach the tap API -- see `TapBridge`.
 public final class KeystrokeSource {
     /// keyDown for characters, keyUp so swallowed presses do not leave keys stuck down in the
     /// target app, flagsChanged so a modifier press can drop a half-typed trigger.
@@ -82,7 +85,7 @@ public final class KeystrokeSource {
     /// Apple's function- and arrow-key block (NSUpArrowFunctionKey and friends).
     private static let appleFunctionRanges: [ClosedRange<UInt32>] = [0xF700...0xF7FF]
 
-    /// True for a decoded scalar that must never be offered to the matcher.
+    /// True for a decoded scalar that lies outside anything a keyboard layout means as prose.
     ///
     /// The reason this exists is that an unmapped key is not silence: this SDK hands back a
     /// per-keycode stand-in -- arrows U+001C/U+001D/U+001E/U+001F, Home U+0001, End U+0004, F1
@@ -99,7 +102,10 @@ public final class KeystrokeSource {
     ///    U+D800...U+DFFF, so a lone surrogate in a UTF-16 payload has already degraded to U+FFFD by the
     ///    time `KeyboardDecoder` returns a `String`. U+FFFD is listed because it means exactly that --
     ///    the payload lied about being text.
-    private static func isInertScalar(_ scalar: Unicode.Scalar) -> Bool {
+    ///
+    /// Internal, not private, so the agreement sweep in `KeystrokeSourceTests` can enumerate the ranges
+    /// across the whole codepoint space. The question the tap asks is `refuses`, never this directly.
+    static func isInertScalar(_ scalar: Unicode.Scalar) -> Bool {
         let value = scalar.value
         if keptControlScalars.contains(value) { return false }
         if value == 0x007F || value == 0xFFFD { return true }
@@ -107,6 +113,29 @@ public final class KeystrokeSource {
             if ranges.contains(where: { $0.contains(value) }) { return true }
         }
         return false
+    }
+
+    /// The one question `route` asks about a decoded character -- and the one the agreement test sweeps.
+    ///
+    /// Refusal is gated on `isWordCharacter`, the engine's own definition rather than a restatement of
+    /// "letter or digit", because the two sides had answered this question separately and 35 scalars
+    /// fell between the answers. Refusing every Cc/Cf/Cs/Co and `U+F700...U+F7FF` scalar unconditionally
+    /// also refused `U+F882`, `U+F89A-F8A7`, `U+F8B8`, `U+F8C1-F8D6`: Apple private-use characters that
+    /// this machine's Unicode data classifies as letters (`Character.isLetter` is true, even though the
+    /// general category is `privateUse`). `TriggerIndex` accepted those as the last character of a
+    /// trigger while the tap refused to deliver the keystroke, so the user could save a combo that can
+    /// never fire -- the dead-trigger class Plan 1 closed by making `unfoldctl check` reject
+    /// unreachable triggers.
+    ///
+    /// Gating on the engine's definition makes the disagreement impossible rather than unlikely: a word
+    /// character is exactly what a trigger is built from, so what is left in the refusal set is only
+    /// ever a character the matcher treats as a delimiter -- one that cannot end a trigger and cannot
+    /// sit inside one, which is what `TriggerIndex.Problem.mustEndWithWordCharacter` and
+    /// `.containsNonWordCharacter` say. `testEveryCharacterTheTapRefusesIsAlsoRejectedAsATrigger` walks
+    /// every scalar the platform can hold and asserts it;
+    /// `testTheInertRangeCharactersTheEngineCallsWordsAreStillKeystrokes` pins the 35 by name.
+    static func refuses(_ character: Character) -> Bool {
+        !isWordCharacter(character) && character.unicodeScalars.contains(where: isInertScalar)
     }
 
     // MARK: - Routing
@@ -120,8 +149,8 @@ public final class KeystrokeSource {
             // the ledger cannot reconcile. Treat repeats as uninterpretable so the buffer releases.
             if event.flags.contains(CGEventFlags(rawValue: 0x400)) { return .other }
             guard let character = KeyboardDecoder.character(from: event) else { return .other }
-            // Decoding succeeded is not the same as being text; see `isInertScalar`.
-            if character.unicodeScalars.contains(where: isInertScalar) { return .other }
+            // Decoding succeeded is not the same as being text; see `refuses`.
+            if Self.refuses(character) { return .other }
             return .keyDown(character, KeyboardDecoder.keyCode(from: event))
         case .keyUp:
             return .keyUp(KeyboardDecoder.keyCode(from: event))
@@ -197,9 +226,104 @@ public final class KeystrokeSource {
         }
     }
 
+    // MARK: - The tap API, behind one seam
+
+    /// The three calls this type makes of the tap API, bundled so they can be replaced.
+    ///
+    /// A session event tap is system-wide: creating one intercepts the user's keyboard, so no
+    /// test may create one -- and the failure paths of `start()` are exactly "CoreGraphics said no",
+    /// which without a seam cannot be produced except by running without Accessibility permission.
+    /// With it, `CGEvent.tapCreate`, `CGEvent.tapEnable` and `CGEvent.tapIsEnabled` appear only inside
+    /// `coreGraphicsTapBridge` (a grep of this file proves it) and a test installs stand-ins that fail.
+    /// `stop()` and `enableAgain()` go through the seam too, so a source holding a stand-in port can
+    /// never hand a non-tap port to the real tap API.
+    struct TapBridge {
+        /// nil means no tap was created: this is how a process without Accessibility permission fails.
+        let create: (CGEventMask, UnsafeMutableRawPointer) -> CFMachPort?
+        /// Switch the tap on and read the answer back, because `CGEventTapEnable` returns nothing --
+        /// enablement is observed, never assumed. False means the port exists but is not live.
+        let enable: (CFMachPort) -> Bool
+        let disable: (CFMachPort) -> Void
+    }
+
+    static let coreGraphicsTapBridge = TapBridge(
+        create: { mask, refcon in
+            CGEvent.tapCreate(tap: .cgSessionEventTap,
+                              place: .headInsertEventTap,
+                              options: .defaultTap,
+                              eventsOfInterest: mask,
+                              callback: KeystrokeSource.callback,
+                              userInfo: refcon)
+        },
+        enable: { port in
+            CGEvent.tapEnable(tap: port, enable: true)
+            return CGEvent.tapIsEnabled(tap: port)
+        },
+        disable: { port in CGEvent.tapEnable(tap: port, enable: false) }
+    )
+
     // MARK: - Live state
 
+    /// Whether a disabled tap may be switched back on, as a value the recovery path consults.
+    ///
+    /// The bound is **time-windowed**, which is the middle of two ways round 1 got it wrong:
+    ///  - A lifetime-total cap (`attempts < 3`, ever) meant three unrelated timeouts spread over an
+    ///    afternoon added up to expansion permanently stopping.
+    ///  - Decay-on-success -- a re-enable that observably took restoring the budget -- meant the
+    ///    *persistently* slow callback was re-enabled forever: three timeouts, three successes, three
+    ///    more timeouts, with `isActive` claiming a live tap the whole time. A callback that cannot keep
+    ///    up produces successes and timeouts in the same breath, so "it took" is not evidence it can.
+    ///
+    /// Why these numbers. `maximumAttempts = 3` inside `window = 60` seconds:
+    ///  - Ordinary load survives. A Spotlight rebuild, an app launching, a login-window transition
+    ///    switches a session tap off once or twice and the callback keeps up afterwards. Attempts age
+    ///    out of the window, so timeouts spaced more than a minute apart never accumulate -- an
+    ///    afternoon of them, a week of them, keeps expanding.
+    ///  - A callback that cannot keep up does not loop. Switched back on, it is switched off again
+    ///    within a second or two, so its attempts land inside one window; the fourth question is
+    ///    answered "no" and it stays answered. Three tries is enough to ride out a transient and small
+    ///    enough that the OS is not being hammered at three attempts a minute forever.
+    ///  - Exhaustion latches rather than rate-limits, deliberately. Letting the window expire and
+    ///    resuming would not end the slow-callback loop, only stretch it; the tap stays off until a
+    ///    person or a coordinator calls `start()`, which is `restart()` below.
+    struct ReEnableBudget {
+        static let maximumAttempts = 3
+        static let window: TimeInterval = 60
+
+        private var attempts: [Date] = []
+        private(set) var hasGivenUp = false
+
+        /// A disable arrived at `now`: switch the tap back on through `enable` if the window still has
+        /// room, and answer whether the tap is live -- which is the value the caller publishes as
+        /// `isActive`. When there is no room, `enable` is not called at all.
+        ///
+        /// The outcome of an attempt goes to the return value and nowhere else: it never touches
+        /// `attempts`. That is the hole round 1 fell into -- it decayed the count whenever a re-enable
+        /// observably took, and a persistently slow callback produces a success and a fresh timeout in
+        /// the same breath, so it was re-enabled forever. "It took" is not evidence that it can keep up;
+        /// only time passing is.
+        @discardableResult
+        mutating func recover(at now: Date, enable: () -> Bool) -> Bool {
+            if hasGivenUp { return false }
+            attempts = attempts.filter { now.timeIntervalSince($0) < Self.window }
+            guard attempts.count < Self.maximumAttempts else {
+                hasGivenUp = true
+                return false
+            }
+            attempts.append(now)
+            return enable()
+        }
+
+        /// The only path back from `hasGivenUp`, and `start()` is the only caller: a deliberate request
+        /// for the tap, not the callback negotiating with itself.
+        mutating func restart() {
+            attempts = []
+            hasGivenUp = false
+        }
+    }
+
     private let handler: (RoutedEvent, CGEventFlags, CGEvent) -> TapOutcome
+    private let bridge: TapBridge
     private var tap: CFMachPort?
 
     /// The run loop that was actually given `runLoopSource`, remembered so `stop()` removes from it
@@ -208,14 +332,15 @@ public final class KeystrokeSource {
     private var runLoopSource: CFRunLoopSource?
     private(set) var isActive = false
 
-    /// Bounded so a tap that cannot be re-enabled is not retried forever. The count is of consecutive
-    /// failures: a re-enable that observably took restores the budget (see `enableAgain`), so unrelated
-    /// timeouts spread over an afternoon cannot add up to expansion silently stopping.
-    private var reEnableAttempts = 0
-    static let maximumReEnableAttempts = 3
+    /// Read alongside `isActive` by whoever renders the state: `isActive == false` with
+    /// `hasGivenUp == false` means "off, and the next timeout will be ridden out", while
+    /// `hasGivenUp == true` means "off, and only a restart brings it back".
+    private(set) var reEnableBudget = ReEnableBudget()
 
-    init(handler: @escaping (RoutedEvent, CGEventFlags, CGEvent) -> TapOutcome) {
+    init(handler: @escaping (RoutedEvent, CGEventFlags, CGEvent) -> TapOutcome,
+         bridge: TapBridge = KeystrokeSource.coreGraphicsTapBridge) {
         self.handler = handler
+        self.bridge = bridge
     }
 
     /// The tap was created with `Unmanaged.passUnretained(self)` as its refcon, so CoreGraphics holds
@@ -245,7 +370,9 @@ public final class KeystrokeSource {
     ///
     /// Internal only so the re-entrancy guard and the identity decision are reachable from a test.
     /// The `.repost` arm calls `post(tap:)`, which injects real events into the user's session -- no
-    /// test may drive that arm; hand it `.pass` or `.swallow` and keep `start()` uncalled.
+    /// test may drive that arm; hand it `.pass` or `.swallow`. The same rule covers the tap itself: a
+    /// test that calls `start()` must inject a stand-in `TapBridge`, so nothing reaches
+    /// `CGEvent.tapCreate`.
     @discardableResult
     func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         // Re-entrancy guard, ahead of every decision: an event this type posted comes straight back
@@ -272,38 +399,46 @@ public final class KeystrokeSource {
         }
     }
 
+    /// Create the tap and put its callback on the current run loop.
+    ///
+    /// Nothing is written to `self` until the tap is observably live, so every failure here -- no port,
+    /// no run-loop source, a port that refuses to switch on -- leaves the object exactly as fresh as it
+    /// was and `start()` retryable. Round 1 assigned `tap` and registered the source *before* it knew
+    /// whether either had taken: a start that failed left a dead port in `tap`, the `guard tap == nil`
+    /// at the top then answered from the wreckage instead of trying again, and the only way back was a
+    /// `stop()` nobody had been told to call.
     @discardableResult
     func start() -> Bool {
         guard tap == nil else { return isActive }
-        let mask = KeystrokeSource.interestedMask
-        guard let port = CGEvent.tapCreate(
-            tap: .cgSessionEventTap,
-            place: .headInsertEventTap,
-            options: .defaultTap,
-            eventsOfInterest: mask,
-            callback: KeystrokeSource.callback,
-            userInfo: Unmanaged.passUnretained(self).toOpaque()
-        ) else { return false }
+        // The refcon is the unowned pointer the C callback dereferences; the tap must never outlive
+        // this object (see `deinit`).
+        let refcon = Unmanaged.passUnretained(self).toOpaque()
+        guard let port = bridge.create(Self.interestedMask, refcon) else { return false }
+        guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, port, 0) else {
+            return false // Never switched on, so there is nothing to switch off; ARC ends the tap here.
+        }
 
-        tap = port
-        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, port, 0)
-        runLoopSource = source
+        // Enable and read back *before* the run loop is touched: the failure path then has nothing
+        // registered to undo, which is what "left as fresh" costs nothing to guarantee. A tap that
+        // exists but refused to switch on must not report itself active, and must not keep the port.
+        guard bridge.enable(port) else { return false }
+
         // Remember the loop the source was given: `CFRunLoopGetCurrent()` in `stop()` is a different
         // loop when the two run on different threads, and removing from the wrong one leaves a live
         // tap that nothing can take down -- feeding a callback whose refcon may already be gone.
         let loop = CFRunLoopGetCurrent()
-        runLoop = loop
         CFRunLoopAddSource(loop, source, .commonModes)
-        CGEvent.tapEnable(tap: port, enable: true)
-        // `CGEventTapEnable` returns nothing, so enablement is read back rather than assumed; a tap
-        // that exists but refused to switch on must not report itself active.
-        isActive = CGEvent.tapIsEnabled(tap: port)
-        reEnableAttempts = 0
-        return isActive
+        tap = port
+        runLoop = loop
+        runLoopSource = source
+        isActive = true
+        // A deliberate start is the only thing that reopens a budget the recovery gave up on.
+        reEnableBudget.restart()
+        return true
     }
 
     func stop() {
-        if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
+        if let tap { bridge.disable(tap) }
         if let runLoop, let runLoopSource {
             CFRunLoopRemoveSource(runLoop, runLoopSource, .commonModes)
         }
@@ -313,24 +448,14 @@ public final class KeystrokeSource {
         isActive = false
     }
 
+    /// The body of the out-of-band arm of the callback: one line on purpose, because the budget is the
+    /// only thing that decides and the only path back from `hasGivenUp` is the `restart()` in `start()`.
     private func enableAgain() {
         guard let tap else { return }
-        guard reEnableAttempts < KeystrokeSource.maximumReEnableAttempts else {
-            // Out of budget. Correct the claim rather than keep it: an `isActive` that survives here
-            // is a menu bar insisting the user's abbreviations are live while nothing expands.
-            isActive = false
-            return
-        }
-        reEnableAttempts += 1
-        CGEvent.tapEnable(tap: tap, enable: true)
-        if CGEvent.tapIsEnabled(tap: tap) {
-            // The re-enable observably took, so this disable was a one-off and the consecutive-failure
-            // budget starts over. Without the decay, three unrelated timeouts spread over hours add up
-            // to expansion permanently stopping -- while the old code kept reporting it as active.
-            reEnableAttempts = 0
-            isActive = true
-        } else {
-            isActive = false
-        }
+        // `enable` is read out before the mutation so the closure captures the seam and the port, not
+        // `self`: `recover` mutates one of self's properties, and a closure that captured self here
+        // would be an overlapping access.
+        let enable = bridge.enable
+        isActive = reEnableBudget.recover(at: Date()) { enable(tap) }
     }
 }

@@ -1,4 +1,5 @@
 import CoreGraphics
+import UnfoldEngine
 import XCTest
 @testable import UnfoldMac
 
@@ -214,6 +215,240 @@ final class KeystrokeSourceTests: XCTestCase {
         XCTAssertEqual(KeystrokeSource.ownership(of: substituted, comparedTo: handedIn),
                        .callbackTookOwnership,
                        "a substituted event is the callback's to hand over")
+    }
+
+    // MARK: - The tap and the engine must agree about what a trigger can be
+
+    /// A whole trigger made of `trigger`, so `TriggerIndex` can be asked whether the engine would take
+    /// the character at all.
+    private func combo(_ trigger: String) -> Combo {
+        Combo(id: UUID(), trigger: trigger, label: trigger, enabled: true,
+              parts: [.text("x")], insertion: .paste)
+    }
+
+    /// The invariant, swept over every scalar the platform can hold: a character the tap refuses must
+    /// also be a character `TriggerIndex` refuses as a trigger.
+    ///
+    /// The two sides used to answer this question from different definitions -- the tap from a list of
+    /// Unicode general categories, the engine from `isWordCharacter` -- and 35 Apple private-use
+    /// characters (`U+F882`, `U+F89A-F8A7`, `U+F8B8`, `U+F8C1-F8D6`) slipped between the answers: this
+    /// machine's Unicode data classifies them as letters, so a trigger ending in one saved fine while
+    /// the tap refused to deliver the keystroke that would have completed it. The user is left holding
+    /// a combo that can never fire, which is the defect class `unfoldctl check` was written to reject.
+    /// This sweep is what stops the disagreement from coming back silently.
+    func testEveryCharacterTheTapRefusesIsAlsoRejectedAsATrigger() {
+        var refused: [Character] = []
+        var unholdable = 0
+        for value in UInt32(0)...0x10FFFF {
+            // `Unicode.Scalar` refuses to hold U+D800...U+DFFF, so the surrogate block is the one part of
+            // the space no sweep can visit -- and the one part no decoded keystroke can carry, because a
+            // lone surrogate has already degraded to U+FFFD by the time the decoder returns a String.
+            guard let scalar = Unicode.Scalar(value) else { unholdable += 1; continue }
+            if KeystrokeSource.refuses(Character(scalar)) { refused.append(Character(scalar)) }
+        }
+        XCTAssertEqual(unholdable, 2048, "the surrogates are the only scalars a sweep cannot construct")
+        XCTAssertFalse(refused.isEmpty, "the sweep refused nothing; the predicate is dead code")
+
+        let index = TriggerIndex(combos: refused.map { combo(String($0)) })
+        let disagreements = index.accepted.map(\.trigger)
+        XCTAssertTrue(disagreements.isEmpty,
+                      "the tap refuses \(disagreements.count) characters the engine accepts as triggers, e.g. "
+                        + disagreements.prefix(10).map { "'\($0)'" }.joined(separator: ", ")
+                        + " — a saved combo that can never fire")
+        XCTAssertEqual(index.rejections.count, refused.count,
+                       "every refused character must reach the rejection list, not be dropped")
+    }
+
+    /// The other direction, and the one that was actually broken: a character the engine *will* accept
+    /// must survive the tap. Pins the 35 scalars this finding was filed against by name, and asks the
+    /// question three ways -- the predicate, the trigger index, and the production path through `route`.
+    func testTheInertRangeCharactersTheEngineCallsWordsAreStillKeystrokes() {
+        var wordAndInert: [UInt32] = []
+        for value in UInt32(0)...0x10FFFF {
+            guard let scalar = Unicode.Scalar(value) else { continue }
+            if KeystrokeSource.isInertScalar(scalar), isWordCharacter(Character(scalar)) {
+                wordAndInert.append(value)
+            }
+        }
+        XCTAssertEqual(wordAndInert,
+                       [0xF882, 0xF89A, 0xF89B, 0xF89C, 0xF89D, 0xF89E, 0xF8A2, 0xF8A3, 0xF8A4, 0xF8A5,
+                        0xF8A6, 0xF8A7, 0xF8B8, 0xF8C1, 0xF8C2, 0xF8C3, 0xF8C4, 0xF8C5, 0xF8C6, 0xF8C7,
+                        0xF8C8, 0xF8C9, 0xF8CA, 0xF8CB, 0xF8CC, 0xF8CD, 0xF8CE, 0xF8CF, 0xF8D0, 0xF8D1,
+                        0xF8D2, 0xF8D3, 0xF8D4, 0xF8D5, 0xF8D6],
+                       "the set of word-classified characters inside the inert ranges changed: a range "
+                         + "that now covers a letter is a range that can refuse a live trigger again")
+        for value in wordAndInert {
+            let character = Character(Unicode.Scalar(value)!)
+            XCTAssertFalse(KeystrokeSource.refuses(character),
+                           "\(name(value)) is a letter to this machine's data, so the tap must not refuse it")
+            XCTAssertEqual(TriggerIndex(combos: [combo(String(character))]).accepted.count, 1,
+                           "\(name(value)) must be a trigger the engine accepts, or there was no disagreement")
+            if case .keyDown(let routed, _) = KeystrokeSource.route(into: keyDown(carrying: value),
+                                                                   type: .keyDown) {
+                XCTAssertEqual(routed, character, "\(name(value)) must reach the matcher")
+            } else {
+                XCTFail("\(name(value)) must route as .keyDown, not be dropped at the tap")
+            }
+        }
+    }
+
+    // MARK: - The re-enable budget keeps a ceiling
+
+    /// Drives a budget with a fake `enable` so the ceiling is tested as it is applied. `live` is what
+    /// the read-back answers -- always true is the shape a persistently slow callback makes: the tap
+    /// does come back on, and then times out again immediately.
+    private func recover(_ budget: inout KeystrokeSource.ReEnableBudget,
+                         at now: Date,
+                         enablements: inout Int,
+                         live: Bool = true) -> Bool {
+        budget.recover(at: now) { enablements += 1; return live }
+    }
+
+    func testTheReEnableBudgetRefusesADisableStormInsideOneWindow() {
+        XCTAssertEqual(KeystrokeSource.ReEnableBudget.maximumAttempts, 3,
+                       "the documented ceiling; a change here must change the comment with it")
+        XCTAssertEqual(KeystrokeSource.ReEnableBudget.window, 60, accuracy: 0.001,
+                       "the documented window; a change here must change the comment with it")
+
+        var budget = KeystrokeSource.ReEnableBudget()
+        var enablements = 0
+        let start = Date(timeIntervalSinceReferenceDate: 1_000)
+        XCTAssertTrue(recover(&budget, at: start, enablements: &enablements))
+        XCTAssertTrue(recover(&budget, at: start.addingTimeInterval(2), enablements: &enablements))
+        XCTAssertTrue(recover(&budget, at: start.addingTimeInterval(4), enablements: &enablements))
+        // Three timeouts inside one window is not ordinary load, it is a callback that cannot keep up.
+        XCTAssertFalse(recover(&budget, at: start.addingTimeInterval(6), enablements: &enablements),
+                       "a fourth re-enable in the same window is the loop round 1 allowed")
+        XCTAssertEqual(enablements, 3, "past the ceiling the tap must not be poked at all")
+        XCTAssertTrue(budget.hasGivenUp,
+                      "the state the caller must report instead of claiming the tap is live")
+        // Given up is a latch, not a rate limit: the window expiring must not restart the hammering.
+        XCTAssertFalse(recover(&budget, at: start.addingTimeInterval(3_600), enablements: &enablements))
+        XCTAssertEqual(enablements, 3)
+    }
+
+    func testReEnableAttemptsThatTookDoNotRestoreTheBudget() {
+        // The exact decay that made round 1 unbounded: every re-enable below answered "yes, it is
+        // enabled again", and a lifetime cap with that reset re-enables a slow callback forever.
+        var budget = KeystrokeSource.ReEnableBudget()
+        var enablements = 0
+        let start = Date(timeIntervalSinceReferenceDate: 1_000)
+        for index in 0..<3 {
+            XCTAssertTrue(recover(&budget, at: start.addingTimeInterval(Double(index) * 3),
+                                  enablements: &enablements, live: true))
+        }
+        XCTAssertFalse(recover(&budget, at: start.addingTimeInterval(9),
+                               enablements: &enablements, live: true))
+        XCTAssertTrue(budget.hasGivenUp)
+    }
+
+    func testTimeoutsWiderThanOneWindowNeverAddUpToAShutdown() {
+        var budget = KeystrokeSource.ReEnableBudget()
+        var enablements = 0
+        let start = Date(timeIntervalSinceReferenceDate: 1_000)
+        let spacing = KeystrokeSource.ReEnableBudget.window + 1
+        // An afternoon of one timeout per window-and-a-bit -- a login transition here, a Spotlight
+        // rebuild there -- must keep expanding. This is the property round 1's lifetime-total cap broke.
+        for index in 0..<12 {
+            XCTAssertTrue(recover(&budget, at: start.addingTimeInterval(spacing * Double(index)),
+                                  enablements: &enablements),
+                          "the timeout at +\(Int(spacing * Double(index)))s met a closed budget")
+        }
+        XCTAssertEqual(enablements, 12)
+        XCTAssertFalse(budget.hasGivenUp)
+    }
+
+    func testOnlyADeliberateRestartReopensAGivenUpBudget() {
+        var budget = KeystrokeSource.ReEnableBudget()
+        var enablements = 0
+        let start = Date(timeIntervalSinceReferenceDate: 1_000)
+        for index in 0..<4 {
+            _ = recover(&budget, at: start.addingTimeInterval(Double(index)), enablements: &enablements)
+        }
+        XCTAssertTrue(budget.hasGivenUp)
+        XCTAssertFalse(recover(&budget, at: start.addingTimeInterval(86_400), enablements: &enablements))
+        budget.restart() // what `start()` does: a person asked for the tap again
+        XCTAssertTrue(recover(&budget, at: start.addingTimeInterval(86_401), enablements: &enablements))
+        XCTAssertFalse(budget.hasGivenUp)
+    }
+
+    // MARK: - A failed start must leave the object as fresh as it was
+
+    /// Stand-ins for the three CoreGraphics tap calls, with the counters that prove what `start()` did.
+    ///
+    /// `KeystrokeSource.coreGraphicsTapBridge` is the only place `CGEvent.tapCreate`,
+    /// `CGEvent.tapEnable` and `CGEvent.tapIsEnabled` are written, so a source built with one of these
+    /// cannot touch the session: the "no live tap" rule holds for the retry tests by construction, and
+    /// the port they hand back is a plain mach port (`CFMachPortCreate`), never a tap.
+    private final class TapBridgeProbe {
+        private(set) var creations = 0
+        private(set) var enablements = 0
+        private(set) var disablements = 0
+        /// How many creations hand back a port before they start returning nil; `0` fails every one,
+        /// which is how a process without Accessibility permission fails.
+        var portCreations = 0
+        /// The enable read-back stays false until this attempt number: a tap that exists but refuses
+        /// to switch on.
+        var enableSucceedsFrom = 1
+
+        func bridge() -> KeystrokeSource.TapBridge {
+            KeystrokeSource.TapBridge(
+                create: { [weak self] _, _ in
+                    guard let self else { return nil }
+                    self.creations += 1
+                    guard self.creations <= self.portCreations else { return nil }
+                    var shouldFreeInfo = DarwinBoolean(false)
+                    return CFMachPortCreate(kCFAllocatorDefault, nil, nil, &shouldFreeInfo)
+                },
+                enable: { [weak self] _ in
+                    guard let self else { return false }
+                    self.enablements += 1
+                    return self.enablements >= self.enableSucceedsFrom
+                },
+                disable: { [weak self] _ in self?.disablements += 1 }
+            )
+        }
+    }
+
+    func testASourceThatCouldNotCreateATapCanTryAgain() {
+        let probe = TapBridgeProbe()
+        probe.portCreations = 0
+        let source = KeystrokeSource(handler: { _, _, _ in .swallow }, bridge: probe.bridge())
+
+        XCTAssertFalse(source.start())
+        XCTAssertFalse(source.isActive)
+        XCTAssertEqual(probe.creations, 1)
+
+        // Before the fix `start()` wrote `tap` and registered the run-loop source before it knew
+        // whether either had taken, so the `guard tap == nil` at the top answered from the wreckage:
+        // the second start did not reach CoreGraphics at all and the only way back was `stop()`.
+        XCTAssertFalse(source.start())
+        XCTAssertEqual(probe.creations, 2, "a start that failed must be retryable without a stop()")
+
+        source.stop()
+        XCTAssertEqual(probe.disablements, 0,
+                       "a start that created nothing leaves nothing for stop() to switch off")
+    }
+
+    func testASourceWhoseTapRefusedToEnableIsRolledBackAndRetries() {
+        let probe = TapBridgeProbe()
+        probe.portCreations = 2
+        probe.enableSucceedsFrom = 2
+        let source = KeystrokeSource(handler: { _, _, _ in .swallow }, bridge: probe.bridge())
+
+        XCTAssertFalse(source.start(), "a tap that exists but will not switch on is not an active source")
+        XCTAssertFalse(source.isActive)
+        XCTAssertEqual(probe.enablements, 1)
+        XCTAssertEqual(probe.disablements, 0,
+                       "the rolled-back port is dropped, not registered with the run loop and abandoned")
+
+        XCTAssertTrue(source.start(), "the retry must reach CoreGraphics again")
+        XCTAssertTrue(source.isActive)
+        XCTAssertEqual(probe.creations, 2)
+
+        source.stop()
+        XCTAssertEqual(probe.disablements, 1, "stop() goes through the bridge, so no test calls the tap API")
+        XCTAssertFalse(source.isActive)
     }
 
 }
