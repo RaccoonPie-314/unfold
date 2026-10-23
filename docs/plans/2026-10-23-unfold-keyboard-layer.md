@@ -17,6 +17,7 @@
 - `swiftLanguageModes: [.v5]`, platform floor `.macOS(.v14)`. v5 is load-bearing here: tap callbacks are `@convention(c)` function pointers.
 - **The tap must never swallow a keystroke it is not certain about.** Every path that is not an unambiguous trigger continuation passes the event through untouched.
 - **Modifier rule:** an event with Command, Control, or Option held is never considered for expansion and immediately releases any buffered prefix. Shift and Caps Lock are allowed, because they change only the character produced.
+- **`CGEventFlags` spelling:** use the real member names -- `.maskCommand`, `.maskControl`, `.maskAlternate`, `.maskShift`, `.maskAlphaShift` (Caps Lock). The shorter `.command` / `.shift` / `.capsLock` forms do not exist on this SDK and will not compile; discovered in Task 2 and corrected there, so every later task uses the mask names.
 - The app must refuse to create a tap when it is not trusted, and must keep working -- visibly, with an explanation -- when permission is absent or revoked.
 - Expansion is limited in this plan to combos whose `parts` are all `.text`. A combo containing a placeholder needs the prompt panel (Plan 4) and is reported as inactive rather than being inserted raw.
 - Released prefixes are re-posted as the **original** `CGEvent` objects, oldest first, before the event in hand is passed on.
@@ -285,7 +286,10 @@ import Foundation
 /// release B" and typing desynchronizes.
 public struct SwallowLedger<Element: Hashable> {
     private var queue: [Element] = []
-    private var awaitingKeyUp: Set<Element> = []
+    /// One pending keyup per swallowed keydown, counted. A `Set<Element>` cannot represent two
+    /// swallowed keydowns of the same keycode, so auto-repeat and the double `d` in `addr` would eat
+    /// one keyup and leak the rest -- the stuck-key failure this type exists to prevent.
+    private var awaitingKeyUp: [Element: Int] = [:]
 
     public init() {}
 
@@ -293,13 +297,13 @@ public struct SwallowLedger<Element: Hashable> {
 
     public mutating func swallow(_ element: Element) {
         queue.append(element)
-        awaitingKeyUp.insert(element)
+        awaitingKeyUp[element, default: 0] += 1
     }
 
-    /// True when this keyup belongs to a swallowed keydown and must be swallowed as well.
-    /// Consumes the expectation so a stray repeat of the same key passes through.
+    /// True when this keyup belongs to a swallowed keydown and must be swallowed as well. Consumes
+    /// exactly one expectation per call.
     public mutating func expectKeyUp(for element: Element) -> Bool {
-        awaitingKeyUp.remove(element) != nil
+        consumeKeyUpExpectation(for: element)
     }
 
     public mutating func release(_ count: Int) -> [Element] {
@@ -308,8 +312,9 @@ public struct SwallowLedger<Element: Hashable> {
         let drained = Array(queue[0..<take])
         queue.removeFirst(take)
         // A re-posted keydown's keyup must reach the target app, or the app sees a press that never
-        // ends. Releasing an element always clears its pending keyup.
-        drained.forEach { awaitingKeyUp.remove($0) }
+        // ends. Consume exactly one keyup expectation per drained keydown, leaving the still-
+        // buffered duplicates' expectations intact.
+        drained.forEach { _ = consumeKeyUpExpectation(for: $0) }
         return drained
     }
 
@@ -325,6 +330,20 @@ public struct SwallowLedger<Element: Hashable> {
     public mutating func clear() {
         queue.removeAll()
         awaitingKeyUp.removeAll()
+    }
+
+    /// Removes exactly one pending keyup, dropping the key entirely once none are left. Returns
+    /// whether an expectation existed to consume -- true even for the last one, since that keyup is
+    /// still ours. Only `expectKeyUp` reads the answer; `release` drains one per keydown.
+    @discardableResult
+    private mutating func consumeKeyUpExpectation(for element: Element) -> Bool {
+        guard let waiting = awaitingKeyUp[element], waiting > 0 else { return false }
+        if waiting > 1 {
+            awaitingKeyUp[element] = waiting - 1
+        } else {
+            awaitingKeyUp[element] = nil
+        }
+        return true
     }
 }
 ```
@@ -378,7 +397,7 @@ final class ModifierGateTests: XCTestCase {
     func testCharacterProducingRequiresAKeyDownWithoutBlockingModifiers() {
         XCTAssertTrue(ModifierGate.isCharacterProducing(flags: .shift, type: .keyDown))
         XCTAssertFalse(ModifierGate.isCharacterProducing(flags: .shift, type: .keyUp))
-        XCTAssertFalse(ModifierGate.isCharacterProducing(flags: .command, type: .keyDown))
+        XCTAssertFalse(ModifierGate.isCharacterProducing(flags: .maskCommand, type: .keyDown))
         XCTAssertFalse(ModifierGate.isCharacterProducing(flags: [], type: .flagsChanged))
         XCTAssertFalse(ModifierGate.isCharacterProducing(flags: [], type: .leftMouseDown))
     }
@@ -404,7 +423,7 @@ public enum ModifierGate {
     private static let blocking: CGEventFlags = [.maskCommand, .maskControl, .maskAlternate]
 
     public static func mayConsiderExpansion(_ flags: CGEventFlags) -> Bool {
-        !flags.intersection(blocking).isEmpty == false
+        flags.isDisjoint(with: blocking)
     }
 
     /// The only events that carry a character worth feeding to the matcher.
@@ -417,7 +436,11 @@ public enum ModifierGate {
 - [ ] **Step 7: Run both suites, then the whole one**
 
 Run: `swift test --filter SwallowLedgerTests && swift test --filter ModifierGateTests && swift test`
-Expected: PASS. 68 prior tests plus the ledger's 9 and the gate's 4.
+Expected: PASS -- 83 total: the 67 engine tests, the ledger's 12, and the gate's 4. Task 1's
+`TargetWiringTests` placeholder is deleted in this task, so the starting count is 67, not 68. Of the
+ledger's 12, three exist to pin keyup multiplicity -- two swallows of the same keycode must produce two
+swallowed keyups, a partial release must keep the remaining duplicate's expectation, and `clear()` must
+drop expectations as well as the queue.
 
 - [ ] **Step 8: Commit**
 
@@ -622,7 +645,7 @@ final class EventRouterTests: XCTestCase {
         var subject = router([combo("addr", "123 Main St")])
         _ = subject.route(.keyDown("a", 0), flags: [])
 
-        XCTAssertEqual(subject.route(.keyDown("d", 2), flags: .command), .releaseThenPass([0]))
+        XCTAssertEqual(subject.route(.keyDown("d", 2), flags: .maskCommand), .releaseThenPass([0]))
     }
 
     func testKeyUpForASwallowedKeyIsSwallowedTooButUnrelatedKeyUpPasses() {
@@ -1186,7 +1209,7 @@ final class ExpansionCoordinatorTests: XCTestCase {
         _ = coordinator.handle(.keyDown("a", 0), flags: [], original: first)
 
         let commandD = keyEvent(2, down: true)
-        let outcome = coordinator.handle(.keyDown("d", 2), flags: .command, original: commandD)
+        let outcome = coordinator.handle(.keyDown("d", 2), flags: .maskCommand, original: commandD)
         XCTAssertTrue(repostedEvents(outcome).first === first)
         XCTAssertTrue(forwardedEvent(outcome) === commandD)
     }
