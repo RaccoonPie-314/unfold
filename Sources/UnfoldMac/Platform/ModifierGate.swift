@@ -7,7 +7,7 @@ public enum ModifierGate {
     private static let blocking: CGEventFlags = [.maskCommand, .maskControl, .maskAlternate]
 
     public static func mayConsiderExpansion(_ flags: CGEventFlags) -> Bool {
-        !flags.intersection(blocking).isEmpty == false
+        flags.isDisjoint(with: blocking)
     }
 
     /// The only events that carry a character worth feeding to the matcher.

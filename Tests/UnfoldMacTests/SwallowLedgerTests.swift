@@ -78,4 +78,32 @@ final class SwallowLedgerTests: XCTestCase {
         XCTAssertFalse(ledger.expectKeyUp(for: 1), "its keydown went back, so its keyup must too")
         XCTAssertTrue(ledger.expectKeyUp(for: 2), "still buffered, still swallowed")
     }
+
+    func testTwoSwallowsOfTheSameElementExpectTwoKeyups() {
+        var ledger = SwallowLedger<Int>()
+        ledger.swallow(2)
+        ledger.swallow(2)
+
+        XCTAssertTrue(ledger.expectKeyUp(for: 2))
+        XCTAssertTrue(ledger.expectKeyUp(for: 2), "the second swallow's keyup must also be swallowed")
+        XCTAssertFalse(ledger.expectKeyUp(for: 2), "a third keyup must pass through")
+    }
+
+    func testPartialReleaseKeepsTheRemainingElementsKeyUpExpectation() {
+        var ledger = SwallowLedger<Int>()
+        ledger.swallow(2)
+        ledger.swallow(2)
+
+        XCTAssertEqual(ledger.release(1), [2])
+        XCTAssertTrue(ledger.expectKeyUp(for: 2), "one is still buffered, so its keyup is still ours")
+        XCTAssertFalse(ledger.expectKeyUp(for: 2))
+    }
+
+    func testClearAlsoDropsKeyUpExpectations() {
+        var ledger = SwallowLedger<Int>()
+        ledger.swallow(1)
+        ledger.clear()
+
+        XCTAssertFalse(ledger.expectKeyUp(for: 1))
+    }
 }
