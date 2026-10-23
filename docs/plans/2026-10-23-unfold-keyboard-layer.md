@@ -753,9 +753,22 @@ public struct EventRouter {
         }
     }
 
-    public mutating func drainForIdle() -> [Int] { ledger.releaseAll() }
+    /// Release everything the ledger is holding so the caller can re-post it, then discard the
+    /// matcher's copy of the same prefix. Both steps are required: releasing the ledger without
+    /// resetting the matcher leaves `buffer` holding characters the app has already been given, so
+    /// continuing to type expands a trigger out of text that is already on screen -- the reviewer
+    /// reproduced `ad` + drain + `d space` producing "address" on top of the released "ad".
+    public mutating func drainForIdle() -> [Int] {
+        let codes = ledger.releaseAll()
+        matcher.reset()
+        return codes
+    }
 
-    public mutating func drainForFocusChange() -> [Int] { ledger.releaseAll() }
+    public mutating func drainForFocusChange() -> [Int] {
+        let codes = ledger.releaseAll()
+        matcher.reset()
+        return codes
+    }
 
     /// Forgets the half-typed trigger and the word boundary together. The coordinator drains and
     /// re-posts before calling this (Plan 1 residuals R3 and R4), so nothing is lost here -- but the
@@ -925,6 +938,26 @@ final class KeystrokeSourceTests: XCTestCase {
         XCTAssertEqual(KeystrokeSource.route(into: event, type: .flagsChanged), .other)
         XCTAssertEqual(KeystrokeSource.route(into: event, type: .leftMouseDown), .other)
     }
+
+    func testAnAutoRepeatedKeydownIsNotANewKeystroke() {
+        // Flag 0x400 marks a repeat. One burst produces many keydowns and a single keyup, which the
+        // ledger cannot reconcile, and holding a key should never build or fire a trigger.
+        let repeated = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true)!
+        let payload = Array("a".utf16)
+        repeated.keyboardSetUnicodeString(stringLength: payload.count, unicodeString: payload)
+        repeated.flags.insert(CGEventFlags(rawValue: 0x400))
+
+        XCTAssertEqual(KeystrokeSource.route(into: repeated, type: .keyDown), .other)
+    }
+
+    func testReleaseEventMatchesTheSwallowedKeycode() {
+        let down = CGEvent(keyboardEventSource: nil, virtualKey: 6, keyDown: true)!
+        guard let up = KeystrokeSource.releaseEvent(matching: down) else {
+            return XCTFail("a swallowed keydown must have a synthesizable release")
+        }
+        XCTAssertEqual(KeyboardDecoder.keyCode(from: up), 6)
+        XCTAssertFalse(up.type == .keyDown, "the synthesized companion must be a keyUp")
+    }
 }
 ```
 
@@ -962,6 +995,11 @@ public final class KeystrokeSource {
     static func route(into event: CGEvent, type: CGEventType) -> RoutedEvent {
         switch type {
         case .keyDown:
+            // Auto-repeat carries flag bit 0x400, which has no named member in CGEventFlags. A
+            // repeated keydown is not a new keystroke: a trigger is a sequence of distinct presses,
+            // and one burst produces a single keyup for many keydowns, which is exactly the shape
+            // the ledger cannot reconcile. Treat repeats as uninterpretable so the buffer releases.
+            if event.flags.contains(CGEventFlags(rawValue: 0x400)) { return .other }
             guard let character = KeyboardDecoder.character(from: event) else { return .other }
             return .keyDown(character, KeyboardDecoder.keyCode(from: event))
         case .keyUp:
@@ -969,6 +1007,14 @@ public final class KeystrokeSource {
         default:
             return .other
         }
+    }
+
+    /// The release half of a swallowed keydown, synthesized for re-posting. See the repost arm of the
+    /// tap callback for why a bare re-posted press is not enough.
+    static func releaseEvent(matching event: CGEvent) -> CGEvent? {
+        CGEvent(keyboardEventSource: nil,
+                virtualKey: CGKeyCode(KeyboardDecoder.keyCode(from: event)),
+                keyDown: false)
     }
 
     private let handler: (RoutedEvent, CGEventFlags, CGEvent) -> TapOutcome
@@ -1009,8 +1055,14 @@ public final class KeystrokeSource {
             return nil
         case .repost(let earlier, thenPass: let current):
             // Released keystrokes go back first, in the order they were eaten, so the re-posted
-            // prefix cannot land after the character that broke it.
-            for original in earlier { original.post(tap: .cgSessionEventTap) }
+            // prefix cannot land after the character that broke it. Each one gets a synthesized
+            // release too: its real keyup almost certainly arrived while the keydown was still
+            // buffered and was eaten by the ledger, and re-posting a press with no release leaves
+            // the target app believing the key is still held down.
+            for original in earlier {
+                original.post(tap: .cgSessionEventTap)
+                Self.releaseEvent(matching: original)?.post(tap: .cgSessionEventTap)
+            }
             return current.map { Unmanaged.passRetained($0) } ?? nil
         }
     }
