@@ -46,6 +46,15 @@ final class TriggerIndexTests: XCTestCase {
         XCTAssertFalse(index.isPrefix("add"))
     }
 
+    func testDisabledComboDoesNotBlockALaterEnabledComboWithTheSameTrigger() {
+        let off = makeCombo("add", replacement: "one", enabled: false)
+        let on = makeCombo("add", replacement: "two")
+        let index = TriggerIndex(combos: [off, on])
+
+        XCTAssertEqual(index.combo(for: "add"), on)
+        XCTAssertEqual(index.accepted, [on])
+    }
+
     func testValidTriggersAreAcceptedInOrder() {
         let index = TriggerIndex(combos: [makeCombo("ad"), makeCombo("add"), makeCombo("addr")])
         XCTAssertEqual(index.accepted.count, 3)
