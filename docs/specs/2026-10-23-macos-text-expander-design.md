@@ -167,9 +167,12 @@ The editor's plain-text mode round-trips with `parts`:
 - `\{{` -- an escaped literal `{{`.
 - Placeholder `id`s must be unique within one combo, contain no braces or colon, and be non-empty.
 
-A trigger must be non-empty, contain no whitespace, and end in a word character -- otherwise the
-loader rejects it with a stated reason. Triggers ending in punctuation are the "partial matching"
-case Beeftext handles per-combo, and they are out of scope for v1.
+A trigger must be non-empty and consist **entirely** of word characters -- letters or digits --
+otherwise the loader rejects it with a stated reason. This is stricter than "no whitespace and ends
+in a word character": the matcher can only extend its buffer on word characters, so a trigger like
+`e-mail`, `a.b`, or `@at` would be accepted, never reachable, and would sit in the user's library
+doing nothing. Punctuation-containing triggers are the "partial matching" case Beeftext handles
+per-combo, and they are out of scope for v1.
 
 ## Failure modes
 

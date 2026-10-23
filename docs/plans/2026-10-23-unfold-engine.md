@@ -333,7 +333,9 @@ git commit -m "Add template parser and trim placeholder to id plus options"
 **Interfaces:**
 - Consumes: `Combo`, `InsertionMode`, `Part` from `Models.swift`.
 - Produces:
-  - `func isWordCharacter(_ character: Character) -> Bool` -- internal, used by `Matcher` in Task 3.
+  - `func isWordCharacter(_ character: Character) -> Bool` -- `public`, shared with `Matcher` in Task 3
+    and with Plan 2's adapter. The final review found it was `internal` while this plan's own table
+    called it the shared definition; it was widened to `public`.
   - `enum MatchAction { case emit(Character), swallow, expand(Combo) }` -- the engine's output vocabulary, consumed by Task 3 and by the Plan 2 adapter.
   - `struct TriggerIndex` with `init(combos: [Combo])`, `func combo(for buffer: String) -> Combo?`, `func isPrefix(_ candidate: String) -> Bool`, `var accepted: [Combo]`, `var rejections: [TriggerIndex.Rejection]`.
   - `TriggerIndex.Problem` cases `empty`, `containsWhitespace`, `mustEndWithWordCharacter`, `duplicateTrigger`.
