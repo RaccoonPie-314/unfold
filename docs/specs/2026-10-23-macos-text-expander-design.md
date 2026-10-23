@@ -83,8 +83,9 @@ Return, Tab, emoji -- is a **delimiter**. The state machine consumes one decoded
    preceding `buffer` was a boundary → swallow the key and extend `buffer`.
 2. Word character that cannot extend `buffer`, and `buffer` was empty → pass the key through.
 3. Word character that cannot extend a non-empty `buffer` → release `buffer` verbatim, then re-decide
-   that same character from an empty buffer. Typing `added` releases `add` and emits all six
-   characters, so nothing fires.
+   that same character from an empty buffer. Typing `added ` releases the swallowed `add`, then
+   emits `e`, `d` and the space, so the whole of `added ` reaches the document unchanged and
+   nothing fires.
 4. Delimiter arriving while `buffer` equals an enabled trigger → **expand**, then pass the delimiter
    through so the typed space or punctuation still lands.
 5. Delimiter arriving while `buffer` holds a partial, non-matching prefix → release `buffer` verbatim,

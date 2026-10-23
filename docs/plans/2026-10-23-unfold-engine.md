@@ -768,13 +768,19 @@ Append these cases inside `final class MatcherTests` in `Tests/UnfoldEngineTests
     func testPartialPrefixReleasedOnDelimiter() {
         let actions = collect("add ", from: Matcher(index: TriggerIndex(combos: [makeCombo("address")])))
 
-        XCTAssertEqual(actions, "add ".map { MatchAction.emit(Character($0)) })
+        XCTAssertEqual(actions, [
+            .swallow, .swallow, .swallow,
+            .emit("a"), .emit("d"), .emit("d"), .emit(" "),
+        ])
     }
 
     func testTypingAddedNeverFiresTheAddTrigger() {
         let actions = collect("added ", from: Matcher(index: TriggerIndex(combos: [makeCombo("add", replacement: "address")])))
 
-        XCTAssertEqual(actions, "added ".map { MatchAction.emit(Character($0)) })
+        XCTAssertEqual(actions, [
+            .swallow, .swallow, .swallow,
+            .emit("a"), .emit("d"), .emit("d"), .emit("e"), .emit("d"), .emit(" "),
+        ])
     }
 
     func testIdleReleaseEmitsBufferedCharacters() {
@@ -787,13 +793,17 @@ Append these cases inside `final class MatcherTests` in `Tests/UnfoldEngineTests
         XCTAssertEqual(matcher.buffer, "")
     }
 
-    func testIdleReleaseLeavesTheMatcherReadyForAFreshTrigger() {
+    func testIdleReleaseKeepsTheBoundaryClosedUntilADelimiterArrives() {
         let add = makeCombo("add")
         var matcher = Matcher(index: TriggerIndex(combos: [add]))
         _ = matcher.feed("a")
-        _ = matcher.releasePending()
+        XCTAssertEqual(matcher.releasePending(), [.emit("a")])
 
-        XCTAssertEqual(matcher.feed("a"), [.swallow])
+        // The released `a` reached the document, so an immediately following `a` cannot
+        // start a trigger -- rule 6. A delimiter has to reopen the boundary first.
+        XCTAssertEqual(matcher.feed("a"), [.emit("a")])
+        _ = matcher.feed(" ")
+        _ = matcher.feed("a")
         _ = matcher.feed("d")
         _ = matcher.feed("d")
         XCTAssertEqual(matcher.feed(" "), [.expand(add), .emit(" ")])
