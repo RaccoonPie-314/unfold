@@ -851,7 +851,11 @@ Add this method to `Sources/UnfoldEngine/Matcher.swift`, immediately after `rese
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `swift test --filter MatcherTests`
-Expected: PASS. All thirteen `MatcherTests` cases green, including the two that prove `added` emits rather than expands.
+Expected: PASS. All seventeen `MatcherTests` cases green, including the ones that prove `added` emits rather than expands.
+
+Two cases beyond this task's original five were added on controller ruling during review: one pinning
+that the release path closes the word boundary until a delimiter arrives, and one pinning that an idle
+release never expands a complete trigger. Both were real coverage gaps a mutation survived.
 
 - [ ] **Step 5: Run the whole suite**
 
