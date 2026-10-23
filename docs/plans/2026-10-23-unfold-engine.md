@@ -528,7 +528,7 @@ public struct TriggerIndex {
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `swift test --filter TriggerIndexTests`
-Expected: PASS, 7 tests, 0 failures. Fix the one malformed method name from Step 2 if you copied it verbatim.
+Expected: PASS, 7 tests, 0 failures.
 
 - [ ] **Step 7: Commit**
 
