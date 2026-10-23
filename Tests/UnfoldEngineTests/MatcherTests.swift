@@ -54,13 +54,35 @@ final class MatcherTests: XCTestCase {
         XCTAssertEqual(actions.count, 7, "no keystroke may be dropped")
     }
 
+    func testSwallowedPrefixIsReleasedWhenTheWordKeepsGrowing() {
+        let add = makeCombo("add", replacement: "address")
+        let actions = collect("added ", from: Matcher(index: TriggerIndex(combos: [add])))
+
+        XCTAssertEqual(
+            actions,
+            Array(repeating: MatchAction.swallow, count: 3)
+                + [.emit("a"), .emit("d"), .emit("d"), .emit("e"), .emit("d"), .emit(" ")]
+        )
+        XCTAssertFalse(actions.contains(.expand(add)), "added must never fire the add trigger")
+    }
+
+    func testDelimiterOverAPartialPrefixReleasesItInsteadOfDroppingIt() {
+        let actions = collect("ad!", from: Matcher(index: TriggerIndex(combos: [makeCombo("addr")])))
+
+        XCTAssertEqual(actions, [MatchAction.swallow, .swallow, .emit("a"), .emit("d"), .emit("!")])
+    }
+
     func testExpansionReopensTheBoundaryForTheNextTrigger() {
         let add = makeCombo("add", replacement: "address")
         var matcher = Matcher(index: TriggerIndex(combos: [add]))
+        _ = matcher.feed("a")
+        _ = matcher.feed("d")
+        _ = matcher.feed("d")
 
-        _ = matcher.feed("x")
-        _ = matcher.feed(" ")
+        XCTAssertEqual(matcher.feed(" "), [.expand(add), .emit(" ")])
+        // The delimiter, not the replacement text, is what last reached the document.
         XCTAssertEqual(matcher.feed("a"), [.swallow])
+        XCTAssertEqual(matcher.buffer, "a")
     }
 
     func testBufferIsReadableForDiagnostics() {
