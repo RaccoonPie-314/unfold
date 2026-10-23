@@ -151,8 +151,12 @@ Expected: PASS -- 67 existing tests plus `TargetWiringTests`, 68 total. If `Unfo
 
 Run:
 ```bash
-grep -rn "import" Sources/UnfoldEngine/ | grep -v "import Foundation" && echo "VIOLATION" || echo "engine still Foundation-only"
+grep -rn "^import " Sources/UnfoldEngine/ | grep -v "Foundation" && echo "VIOLATION" || echo "engine still Foundation-only"
 ```
+Anchor the pattern to the start of the line. A bare `grep "import"` also matches the words
+"importable" and "Beeftext-imported" in comments and reports a false violation -- which is exactly what
+happened on the first run of this step.
+
 Expected: `engine still Foundation-only`.
 
 - [ ] **Step 6: Commit**
@@ -1711,7 +1715,7 @@ git commit -m "Add menu-bar shell, permission flow, and live tap attach"
 cd "$REPO_ROOT"
 swift build
 swift test
-grep -rn "import" Sources/UnfoldEngine/ | grep -v "import Foundation" || echo "engine still Foundation-only"
+grep -rn "^import " Sources/UnfoldEngine/ | grep -v "Foundation" || echo "engine still Foundation-only"
 grep -rn "UCKeyTranslate" Sources/ || echo "R-P2-1 intact: the system's own translation is used"
 ```
 
