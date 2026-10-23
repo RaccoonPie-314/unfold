@@ -687,6 +687,15 @@ final class EventRouterTests: XCTestCase {
         var subject = router([combo("addr", "123 Main St")])
         XCTAssertEqual(subject.route(.other, flags: []), .passThrough)
     }
+
+    func testAnUninterpretableKeyReleasesTheBufferRatherThanStrandingIt() {
+        var subject = router([combo("addr", "123 Main St")])
+        _ = subject.route(.keyDown("a", 0), flags: [])
+        _ = subject.route(.keyDown("d", 2), flags: [])
+
+        XCTAssertEqual(subject.route(.other, flags: []), .releaseThenPass([0, 2]))
+        XCTAssertEqual(subject.bufferedCount, 0)
+    }
 }
 ```
 
@@ -730,7 +739,13 @@ public struct EventRouter {
     public mutating func route(_ event: RoutedEvent, flags: CGEventFlags) -> RoutingDecision {
         switch event {
         case .other:
-            return .passThrough
+            // Added during Task 3's review. A key the decoder could not reduce to one character --
+            // a multi-grapheme payload, a refused oversize payload, anything undecoded -- is a break
+            // in the typing sequence. Passing it through while a partial prefix stays buffered
+            // strands those characters: the app receives this key first and the old prefix re-posted
+            // after it. Release in order, then let this one through.
+            let stranded = ledger.releaseAll()
+            return stranded.isEmpty ? .passThrough : .releaseThenPass(stranded)
         case .keyUp(let code):
             return ledger.expectKeyUp(for: code) ? .swallowAndRecord : .passThrough
         case .keyDown(let character, let code):
@@ -798,7 +813,7 @@ and it is the reason Task 7's checklist includes a Ctrl-C-in-Terminal case rathe
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `swift test --filter EventRouterTests`
-Expected: PASS, 11 tests. `testKeyUpForASwallowedKeyIsSwallowedTooButUnrelatedKeyUpPasses` and `testABrokenPrefixReleasesWhatItAteBeforePassingTheCurrentKey` are the two that keep this keyboard sink from eating the user's writing; if they fail, the ledger and the positional rule are being conflated.
+Expected: PASS, 12 tests. `testKeyUpForASwallowedKeyIsSwallowedTooButUnrelatedKeyUpPasses` and `testABrokenPrefixReleasesWhatItAteBeforePassingTheCurrentKey` are the two that keep this keyboard sink from eating the user's writing; if they fail, the ledger and the positional rule are being conflated.
 
 - [ ] **Step 5: Verify the ledger and buffer agree after every case**
 
@@ -818,7 +833,7 @@ Add, inside `EventRouterTests`:
 ```
 
 Run: `swift test --filter EventRouterTests`
-Expected: PASS, 13 tests. If it fails, `ledger.clear()` is not being reached on the expansion path.
+Expected: PASS, 14 tests. If it fails, `ledger.clear()` is not being reached on the expansion path.
 
 Also pin the reset contract, which Task 6's focus-change path depends on:
 
@@ -1739,7 +1754,7 @@ cd "$REPO_ROOT"
 swift build
 swift test
 grep -rn "^import " Sources/UnfoldEngine/ | grep -v "Foundation" || echo "engine still Foundation-only"
-grep -rn "UCKeyTranslate" Sources/ || echo "R-P2-1 intact: the system's own translation is used"
+grep -rn "UCKeyTranslate(" Sources/ || echo "R-P2-1 intact: the system's own translation is used"
 ```
 
 All four must pass, and Task 7 Step 5's checklist must be filled in with observed results, not
