@@ -1,6 +1,6 @@
 import Foundation
 
-public struct Matcher {
+public struct Matcher: Sendable {
     private let index: TriggerIndex
     /// The swallowed prefix still held back from the document: the trailing run of
     /// characters that could still complete a trigger, or "" when nothing is pending.
@@ -21,14 +21,19 @@ public struct Matcher {
         return feedDelimiter(character)
     }
 
-    public mutating func reset() {
-        buffer = ""
-        lastEmitted = nil
+    /// Tears the machine down for the adapter -- a tap disable, a focus change, a cancelled prompt --
+    /// without losing a keystroke. Whatever the buffer holds is handed back through the same release
+    /// path `releasePending()` uses, and the word boundary is left exactly where that release puts
+    /// it. Clearing `lastEmitted` here would fabricate a boundary out of nothing, and `p`, `reset()`,
+    /// `a d d ␣` would expand `add` inside a word -- which rule 6 forbids.
+    @discardableResult
+    public mutating func reset() -> [MatchAction] {
+        releasePending()
     }
 
     /// Emits whatever is buffered without expanding. The adapter calls this when typing
     /// goes idle, when focus changes, and when the user pauses expansion, so a swallowed
-    /// prefix can never be lost.
+    /// prefix can never be lost. `reset()` drains through here.
     public mutating func releasePending() -> [MatchAction] {
         let pending = buffer
         buffer = ""

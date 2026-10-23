@@ -54,18 +54,6 @@ final class MatcherTests: XCTestCase {
         XCTAssertEqual(actions.count, 7, "no keystroke may be dropped")
     }
 
-    func testSwallowedPrefixIsReleasedWhenTheWordKeepsGrowing() {
-        let add = makeCombo("add", replacement: "address")
-        let actions = collect("added ", from: Matcher(index: TriggerIndex(combos: [add])))
-
-        XCTAssertEqual(
-            actions,
-            Array(repeating: MatchAction.swallow, count: 3)
-                + [.emit("a"), .emit("d"), .emit("d"), .emit("e"), .emit("d"), .emit(" ")]
-        )
-        XCTAssertFalse(actions.contains(.expand(add)), "added must never fire the add trigger")
-    }
-
     func testDelimiterOverAPartialPrefixReleasesItInsteadOfDroppingIt() {
         let actions = collect("ad!", from: Matcher(index: TriggerIndex(combos: [makeCombo("addr")])))
 
@@ -90,7 +78,39 @@ final class MatcherTests: XCTestCase {
         _ = matcher.feed("a")
         _ = matcher.feed("d")
         XCTAssertEqual(matcher.buffer, "ad")
-        matcher.reset()
+        XCTAssertEqual(matcher.reset(), [.emit("a"), .emit("d")])
+        XCTAssertEqual(matcher.buffer, "")
+    }
+
+    // Rule 6 plus rule 7: `reset()` is the adapter's teardown path, so it must hand back what the
+    // engine was holding instead of discarding it, and it must not pretend that nothing was ever
+    // typed. Deleting the drain makes the second assertion fail; deleting the boundary preservation
+    // (i.e. clearing `lastEmitted`) makes the `add ` sequence below expand.
+    func testResetDoesNotFabricateAWordBoundary() {
+        let add = makeCombo("add")
+        var matcher = Matcher(index: TriggerIndex(combos: [add]))
+
+        XCTAssertEqual(matcher.feed("p"), [.emit("p")])
+        XCTAssertEqual(matcher.reset(), [], "nothing is buffered, so reset must emit nothing")
+
+        var actions: [MatchAction] = []
+        for character in "add " {
+            actions.append(contentsOf: matcher.feed(character))
+        }
+        XCTAssertEqual(
+            actions, [.emit("a"), .emit("d"), .emit("d"), .emit(" ")],
+            "`p` reached the document, so a match may not begin at `a`"
+        )
+        XCTAssertFalse(actions.contains(.expand(add)), "reset() must not open a boundary inside a word")
+    }
+
+    func testResetEmitsWhateverWasBuffered() {
+        let addr = makeCombo("addr")
+        var matcher = Matcher(index: TriggerIndex(combos: [addr]))
+        XCTAssertEqual(matcher.feed("a"), [.swallow])
+        XCTAssertEqual(matcher.feed("d"), [.swallow])
+
+        XCTAssertEqual(matcher.reset(), [.emit("a"), .emit("d")], "a swallowed keystroke is never lost")
         XCTAssertEqual(matcher.buffer, "")
     }
 
@@ -183,6 +203,81 @@ final class MatcherTests: XCTestCase {
             .emit("a"), .emit("d"), .emit("d"), .emit("e"), .emit("d"), .emit(" "),
         ])
         XCTAssertFalse(actions.contains(.expand(ed)), "released 'add' must not let 'ed' expand")
+    }
+
+    // With triggers `ad` and `addr`, `add` is a live prefix but not a trigger. The only correct
+    // answer when the delimiter arrives is to release it: a `combo(for:)` that fell back to the
+    // longest prefix would expand `ad` here and eat the third `d`.
+    func testBufferThatIsOnlyAPrefixIsNeverExpanded() {
+        let ad = makeCombo("ad", replacement: "advertisement")
+        let addr = makeCombo("addr", replacement: "123 Main St")
+        let actions = collect("add ", from: Matcher(index: TriggerIndex(combos: [ad, addr])))
+
+        XCTAssertEqual(actions, [
+            .swallow, .swallow, .swallow,
+            .emit("a"), .emit("d"), .emit("d"), .emit(" "),
+        ])
+        XCTAssertFalse(actions.contains(.expand(ad)), "`add` is not the trigger `ad`")
+        XCTAssertFalse(actions.contains(.expand(addr)), "`add` is not the trigger `addr`")
+    }
+
+    // F3: `MatchAction` cannot say which action concerns the event in hand, so the contract is
+    // positional and this is what pins it: the last action of every `feed` result is about the
+    // character just typed, and everything before it is about characters swallowed earlier -- either
+    // the buffer released verbatim, in order, or the single expansion that consumed it.
+    func testFeedResultsHonorThePositionalContract() {
+        let index = TriggerIndex(combos: [
+            makeCombo("add", replacement: "address"),
+            makeCombo("addr", replacement: "123 Main St"),
+            makeCombo("ed", replacement: "e"),
+            makeCombo("a", replacement: "alpha"),
+        ])
+
+        for input in ["add ", "addr ", "added ", "padding ", "ad!d", "ad a ", "a", "x add ed ", " add"] {
+            var matcher = Matcher(index: index)
+            for character in input {
+                let bufferedBefore = matcher.buffer
+                let actions = matcher.feed(character)
+                XCTAssertFalse(actions.isEmpty, "feed(`\(character)`) must account for the event it got")
+                let leading = Array(actions.dropLast())
+
+                if leading.count == 1, case .expand(let combo) = leading[0] {
+                    XCTAssertEqual(
+                        combo.trigger, bufferedBefore,
+                        "an expansion in a leading position replaces exactly the buffer (input `\(input)`)"
+                    )
+                } else if !leading.isEmpty {
+                    let released = leading.compactMap(Self.emitted)
+                    XCTAssertEqual(
+                        released.count, leading.count,
+                        "only `.emit` may precede the action for the event in hand (input `\(input)`)"
+                    )
+                    XCTAssertEqual(
+                        String(released), bufferedBefore,
+                        "leading `.emit`s are the swallowed buffer, in order (input `\(input)`)"
+                    )
+                }
+
+                if let last = actions.last {
+                    switch last {
+                    case .swallow:
+                        XCTAssertTrue(
+                            matcher.buffer.hasSuffix(String(character)),
+                            "`.swallow` means the event in hand is now held in the buffer (input `\(input)`)"
+                        )
+                    case .emit(let emitted):
+                        XCTAssertEqual(emitted, character, "the last action must be the event in hand (input `\(input)`)")
+                    case .expand:
+                        XCTFail("a `feed` result never ends with `.expand`: the delimiter still has to pass through")
+                    }
+                }
+            }
+        }
+    }
+
+    private static func emitted(_ action: MatchAction) -> Character? {
+        if case .emit(let character) = action { return character }
+        return nil
     }
 }
 
