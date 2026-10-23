@@ -10,6 +10,10 @@ let package = Package(
             name: "Unfold",
             dependencies: ["UnfoldEngine"]
         ),
+        .executableTarget(
+            name: "UnfoldCTL",
+            dependencies: ["UnfoldEngine"]
+        ),
         .testTarget(
             name: "UnfoldEngineTests",
             dependencies: ["UnfoldEngine"]
