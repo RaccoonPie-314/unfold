@@ -115,6 +115,43 @@ final class EventRouterTests: XCTestCase {
                        "a drain must discard the matcher's prefix, not keep it live")
     }
 
+    // MARK: - Fix round 1, finding A: the two release paths inside `route` had the same bug
+
+    /// The reviewer's repro, verbatim. A real Shift press reaches the router as `.other`, which
+    /// released "ad" back to the app while `matcher.buffer` still held it; finishing the trigger then
+    /// expanded it, so the document read `ad123 Main St` -- duplicated text, not a missed expansion.
+    /// Task 4's drains already clear the matcher; `route`'s own release paths must too.
+    func testAnUninterpretableReleaseLeavesTheMatcherUnableToReExpandTheReleasedPrefix() {
+        let addr = combo("addr", "123 Main St")
+        var subject = router([addr])
+        _ = subject.route(.keyDown("a", 0), flags: [])
+        _ = subject.route(.keyDown("d", 2), flags: [])
+
+        XCTAssertEqual(subject.route(.other, flags: []), .releaseThenPass([0, 2]))
+
+        // The app has "ad" now. Completing the trigger must not answer it with a second copy.
+        XCTAssertEqual(subject.route(.keyDown("d", 2), flags: []), .passThrough)
+        XCTAssertEqual(subject.route(.keyDown("r", 15), flags: []), .passThrough)
+        XCTAssertEqual(subject.route(.keyDown(" ", 49), flags: []), .passThrough,
+                       "a release that hands the prefix back must make the matcher forget it too")
+    }
+
+    /// The same duplication through the blocking-modifier release: the guard returns before `feed`,
+    /// so the buffer survives the release and the next three keys still spell `addr`.
+    func testABlockingModifierReleaseLeavesTheMatcherUnableToReExpandTheReleasedPrefix() {
+        let addr = combo("addr", "123 Main St")
+        var subject = router([addr])
+        _ = subject.route(.keyDown("a", 0), flags: [])
+        _ = subject.route(.keyDown("d", 2), flags: [])
+
+        XCTAssertEqual(subject.route(.keyDown("d", 2), flags: .maskCommand), .releaseThenPass([0, 2]))
+
+        XCTAssertEqual(subject.route(.keyDown("d", 2), flags: []), .passThrough)
+        XCTAssertEqual(subject.route(.keyDown("r", 15), flags: []), .passThrough)
+        XCTAssertEqual(subject.route(.keyDown(" ", 49), flags: []), .passThrough,
+                       "a release that hands the prefix back must make the matcher forget it too")
+    }
+
     func testABreakReleasesThreeBufferedKeysInOldestFirstOrder() {
         var subject = router([combo("addr", "123 Main St")])
         _ = subject.route(.keyDown("a", 0), flags: [])

@@ -44,7 +44,14 @@ public struct EventRouter {
             // in the typing sequence. Passing it through while a partial prefix stays buffered
             // strands those characters: the app receives this key first and the old prefix re-posted
             // after it. Release in order, then let this one through.
+            //
+            // Fixed during Task 6's review (finding A): the release alone duplicated the user's text.
+            // `releaseAll()` hands "ad" back to the app, and a matcher still holding "ad" then
+            // expands the finished trigger on top of it -- `ad123 Main St`. Task 4's drains learned
+            // the same lesson; a release reached from inside `route` is the same case, so the
+            // discarded `reset()` actions are the characters `releaseAll()` just returned.
             let stranded = ledger.releaseAll()
+            matcher.reset()
             return stranded.isEmpty ? .passThrough : .releaseThenPass(stranded)
         case .keyUp(let code):
             return ledger.expectKeyUp(for: code) ? .swallowAndRecord : .passThrough
@@ -87,8 +94,14 @@ public struct EventRouter {
                                        flags: CGEventFlags) -> RoutingDecision {
         // A blocking modifier means this is a shortcut, not prose. Hand back everything we were
         // holding before deciding anything else, so Cmd+anything is never assembled from eaten keys.
+        //
+        // The guard returns before `feed`, so this key never reaches the matcher -- and finding A's
+        // bug was exactly that the released prefix stayed in `matcher.buffer` while the ledger was
+        // emptied. The next keys then completed the trigger and expanded it on top of the text the
+        // release had already put in the document.
         guard ModifierGate.mayConsiderExpansion(flags) else {
             let released = ledger.releaseAll()
+            matcher.reset()
             return released.isEmpty ? .passThrough : .releaseThenPass(released)
         }
 
