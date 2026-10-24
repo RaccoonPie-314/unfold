@@ -162,6 +162,15 @@ public final class Injector: TextInjecting {
     }
 
     /// For apps that reject synthetic paste. Setting the unicode string directly sidesteps layout.
+    ///
+    /// Each event is marked as self-generated *before* it is posted. The tap is a head-insert session
+    /// tap, so these events come straight back through `KeystrokeSource`'s callback; unmarked, they
+    /// would be decoded and fed to the matcher as if the user had typed them. A combo whose replacement
+    /// contains its own trigger plus a delimiter (`sig` → `sig `) would then re-enter `insert` on every
+    /// pass and recurse. `markAsReposted` is the same marker the source's re-post path writes, and its
+    /// short-circuit at the top of `handle` forwards marked events untouched. Marking must precede the
+    /// post, not follow it: re-entrant delivery can land while `post` is still on the stack (see
+    /// `KeystrokeSource.repostMark`).
     private func type(_ text: String) {
         let source = CGEventSource(stateID: .combinedSessionState)
         for scalar in text.unicodeScalars {
@@ -170,8 +179,12 @@ public final class Injector: TextInjecting {
             let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true)
             // The real label on this SDK is `stringLength:`, not `maxLength:` -- the compiler decided.
             down?.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
-            if let down { clipboard.post(down) }
+            if let down {
+                KeystrokeSource.markAsReposted(down)
+                clipboard.post(down)
+            }
             if let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) {
+                KeystrokeSource.markAsReposted(up)
                 clipboard.post(up)
             }
         }

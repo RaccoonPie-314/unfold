@@ -233,4 +233,55 @@ final class InjectorTests: XCTestCase {
         XCTAssertEqual(board.posted.count, 4, "two scalars, each a press and a release")
         XCTAssertEqual(board.scheduledRestoreCount, 0, "nothing deferred, so nothing to restore")
     }
+
+    // MARK: - Rule 4: a .keys insertion is marked for the tap's short-circuit
+
+    /// The tap is a head-insert session tap, so every event `.keys` posts travels through it on the
+    /// way to the target app. If those events are unmarked the tap decodes them and hands them to the
+    /// matcher as if the user had typed them -- the replacement re-enters matching, and a combo like
+    /// `sig` → `sig ` (its own trigger plus a delimiter) fires itself again. The injector must tag
+    /// each one with the same marker the source checks before anything else.
+    func testEveryEventAKeysInsertionPostsCarriesTheRepostMark() {
+        let board = clipboard()
+        let injector = Injector(clipboard: board)
+
+        injector.insert("ab", mode: .keys)
+
+        XCTAssertEqual(board.posted.count, 4, "two scalars, each a press and a release")
+        XCTAssertTrue(board.posted.allSatisfy(KeystrokeSource.isReposted),
+                      "every synthetic keystroke must carry the mark the tap's short-circuit checks")
+    }
+
+    /// The reviewer's regression, pinned at the seam. `Injector` has no matcher of its own, so this
+    /// is only provable as a composition: the injector's mark is fed to the source's short-circuit,
+    /// with the handler standing in for "dispatch to the matcher". Nothing may reach that handler.
+    ///
+    /// `sig` → `sig ` is the shape that recursed: the replacement contains the trigger plus a
+    /// delimiter, so each decoded pass re-enters `insert`. The tap is not started -- no bridge call is
+    /// reachable here -- so this pins the decision, not the delivery.
+    func testAKeysInsertionOfItsOwnTriggerIsShortCircuitedBeforeTheMatcher() {
+        let board = clipboard()
+        let injector = Injector(clipboard: board)
+        injector.insert("sig ", mode: .keys)
+
+        var dispatched: [CGEvent] = []
+        let source = KeystrokeSource(
+            handler: { _, _, event in
+                dispatched.append(event)
+                return .swallow
+            },
+            bridge: KeystrokeSource.TapBridge(create: { _, _ in nil },
+                                              enable: { _ in false },
+                                              disable: { _ in })
+        )
+
+        for event in board.posted {
+            let returned = source.handle(type: .keyDown, event: event)
+            XCTAssertTrue(returned?.takeUnretainedValue() === event,
+                          "a marked synthetic keystroke is forwarded untouched, never swallowed")
+        }
+
+        XCTAssertTrue(dispatched.isEmpty,
+                      "the replacement reached the matcher; sig → sig  would recurse on the next pass")
+    }
 }
