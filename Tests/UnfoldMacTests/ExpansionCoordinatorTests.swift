@@ -170,6 +170,25 @@ final class ExpansionCoordinatorTests: XCTestCase {
         XCTAssertEqual(injector.insertions.count, 2)
     }
 
+    func testACommandShortcutDoesNotPoisonTheBoundary() {
+        let (coordinator, injector, _) = subject([combo("addr", parts: [textPart("123 Main St")])])
+
+        // Select-all is ⌘A -- a keyDown carrying the character "a" with Command held. It renders no
+        // text, so it must not become the "last character typed". Doing so closed the word boundary
+        // and made the next trigger unmatchable, which is what the user hit after select-all/undo.
+        _ = coordinator.handle(.keyDown("a", 0), flags: .maskCommand, original: keyEvent(0, down: true))
+
+        for (character, code) in [(Character("a"), 0), (Character("d"), 2),
+                                  (Character("d"), 2), (Character("r"), 15),
+                                  (Character(" "), 49)] {
+            _ = coordinator.handle(.keyDown(character, code), flags: [],
+                                   original: keyEvent(code, down: true))
+        }
+
+        XCTAssertEqual(injector.deletions.count, 1, "a shortcut before the trigger must not block it")
+        XCTAssertEqual(injector.insertions.first?.0, "123 Main St")
+    }
+
     func testComposedTextJoinsLiteralParts() {
         let signature = combo("sig", parts: [textPart("Best, "), textPart("Robin")])
         let (coordinator, _, _) = subject([signature])

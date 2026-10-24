@@ -256,12 +256,27 @@ final class StatusWindowController: NSWindowController, NSWindowDelegate {
         textEdit?.activate(options: [.activateIgnoringOtherApps])
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
+            // Reproduce the reported sequence: select-all first, then the trigger. ⌘A renders no
+            // text, so it must not be mistaken for typed input.
+            StatusWindowController.postSelectAll()
             StatusWindowController.postKeystrokes("addr ")
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
                 self?.show()
                 self?.refresh()
             }
         }
+    }
+
+    private static func postSelectAll() {
+        let source = CGEventSource(stateID: .combinedSessionState)
+        let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true)
+        let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
+        down?.flags = .maskCommand
+        up?.flags = .maskCommand
+        down?.post(tap: .cgSessionEventTap)
+        usleep(30_000)
+        up?.post(tap: .cgSessionEventTap)
+        usleep(30_000)
     }
 
     private static func postKeystrokes(_ text: String) {

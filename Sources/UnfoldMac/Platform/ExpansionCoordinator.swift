@@ -193,11 +193,12 @@ public final class ExpansionCoordinator {
 
         switch router.route(event, flags: flags) {
         case .passThrough, .swallowAndRecord, .releaseThenPass:
-            // Nothing is held back any more. The old design swallowed a trigger prefix so it never
-            // flickered on screen; the cost was that typing went invisible until a match, and a pause
-            // erased what you had typed. Now every keystroke renders, the matcher shadows what the app
-            // received, and only an expansion rewrites anything.
-            if case .keyDown(let character, _) = event {
+            // Only a keystroke that actually produced text counts as rendered. A shortcut does not:
+            // ⌘A arrives as `.keyDown("a")` with Command held, and recording that as the last
+            // character made the boundary think a word was in progress -- so select-all (or undo,
+            // copy, paste) made the next `addr` silently unmatchable.
+            if case .keyDown(let character, _) = event,
+               ModifierGate.mayConsiderExpansion(flags) {
                 router.noteRendered(character)
             }
             return .pass(original)
