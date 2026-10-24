@@ -80,10 +80,6 @@ public final class ExpansionCoordinator {
     /// carries a reason; `tapState` alone cannot distinguish "untrusted" from "not asked yet".
     public private(set) var tapRefusalReason: TapRefusalReason?
 
-    /// The exact events behind the router's ledger, in the same order. The two are popped in
-    /// lockstep; every transition below keeps `heldEvents.count == router.bufferedCount` or
-    /// restores it, and a divergence is a bug in this file rather than a condition to tolerate.
-    private var heldEvents: [CGEvent] = []
 
     private var source: KeystrokeSource?
     public private(set) var isPaused = true
@@ -110,7 +106,6 @@ public final class ExpansionCoordinator {
 
     public var activeCount: Int { active.count }
     public var registeredTriggers: Set<String> { Set(active.map(\.trigger)) }
-    public var bufferedCount: Int { heldEvents.count }
 
     /// Diagnostics for the status window. Without these the app is unfalsifiable from the outside:
     /// "no expansion" looks identical whether permission is missing, the tap is dead, or the tap is
@@ -165,7 +160,7 @@ public final class ExpansionCoordinator {
         case .swallow: decision = "SWALLOW"
         case .repost(let events, thenPass: _): decision = "repost(\(events.count))"
         }
-        lastRouting = "\(summary) → \(decision) buffer=\(heldEvents.count)"
+        lastRouting = "\(summary) → \(decision) candidate=\(router.typedCount)"
         appendTrace("\(lastRouting) flags=\(flags.rawValue)\n")
     }
 
@@ -192,7 +187,7 @@ public final class ExpansionCoordinator {
         let renderedCount = router.typedCount
 
         switch router.route(event, flags: flags) {
-        case .passThrough, .swallowAndRecord, .releaseThenPass:
+        case .passThrough, .buffered:
             // Only a keystroke that actually produced text counts as rendered. A shortcut does not:
             // ⌘A arrives as `.keyDown("a")` with Command held, and recording that as the last
             // character made the boundary think a word was in progress -- so select-all (or undo,
@@ -370,58 +365,16 @@ public final class ExpansionCoordinator {
 
     // MARK: - Buffer plumbing
 
-    /// Drain the router, post what it released unless told not to, and return it (R4).
-    ///
-    /// Both router drains reset the matcher internally, which is why no caller here follows up
-    /// with `router.reset()`; the focus half is named so the two paths stay distinguishable even
-    /// while their bodies match.
+    /// Forgets the candidate. Nothing is held any more -- every keystroke rendered the moment it was
+    /// typed -- so a drain has no events to hand back; its only job is to make the next word start
+    /// clean after a focus change, a pause, or a long idle gap.
     @discardableResult
     private func drainRouter(repostingBuffered: Bool = true,
                              forFocusChange: Bool = false) -> [CGEvent] {
-        // The precondition `attachTap` already enforces, extended to the drains: the tap callback, the
-        // menu's pause, the idle timer and the focus observer all mutate this same unguarded state, and
-        // they only serialize because they share the main run loop. A drain called from another thread is
-        // a data race on `heldEvents` and on the matcher, so it stops here rather than corrupting a
-        // keystroke mid-sentence. Every drain path funnels through this line -- `pause`
-        // (repostingBuffered true or false), `handleIdle`, `handleFocusChange`, and `detachTap`, which
-        // pauses first -- so the guard is written once and cannot drift out of step with one of them.
         precondition(Thread.isMainThread,
                      "a drain must run on the thread that hosts the tap: pause(), handleIdle() and "
                      + "handleFocusChange() all reach this line, and none of them is guarded elsewhere")
-        // Take against the ledger's own count before draining it: the events and the codes are
-        // lockstep twins, and this is the one place that reads `router.bufferedCount`.
-        let events = take(count: router.bufferedCount)
-        if forFocusChange { _ = router.drainForFocusChange() } else { _ = router.drainForIdle() }
-        // Drains that are not happening inside the tap callback have no one else to post them, so
-        // this does. The `.releaseThenPass` path out of `handle` does NOT post -- the tap owner does,
-        // and doing both would type the released characters twice.
-        //
-        // Finding C: posting the raw events bypassed `KeystrokeSource.eventsToPost`, the one function
-        // that marks an event as re-posted and synthesizes its keyup. An unmarked keydown sails back
-        // through the tap's guard and can be swallowed again -- re-entrancy -- and a press with no
-        // release leaves the target app believing the key is still held. A drain outside the callback
-        // still has to answer to the tap, so it goes through the same path the callback uses.
-        if repostingBuffered { KeystrokeSource.eventsToPost(forRepost: events).forEach(repost) }
-        return events
-    }
-
-    /// Hands the FIFO's first `count` events to the caller.
-    ///
-    /// `heldEvents` and the router's ledger are the same number by construction, so asking for more
-    /// events than this holds is a bug in this file. Finding D: `min` and the `!heldEvents.isEmpty`
-    /// guard used to *absorb* that -- the difference between the two counts was dropped without a
-    /// trace, which is a lost keystroke wearing a doc comment that promises the opposite. It now
-    /// asserts. The clamp stays as the release-mode backstop, because a keyboard layer that crashes
-    /// the host app mid-sentence is worse than the divergence it reports.
-    private func take(count: Int) -> [CGEvent] {
-        assert(count <= heldEvents.count,
-               "router released \(count) keystrokes but the coordinator holds \(heldEvents.count): "
-               + "the ledger and the event FIFO are lockstep twins, so a divergence is a bug here "
-               + "(see `heldEvents`) — the difference would otherwise be dropped, losing keystrokes")
-        guard count > 0 else { return [] }
-        let take = min(count, heldEvents.count)
-        let events = Array(heldEvents[0..<take])
-        heldEvents.removeFirst(take)
-        return events
+        router.forget()
+        return []
     }
 }

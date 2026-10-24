@@ -53,9 +53,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.onShowStatus = { [weak statusWindow] in statusWindow?.show() }
         statusWindow.show()
 
-        // Task 6's idle drain runs on the main run loop, the thread that hosts the tap. Without it a
-        // half-typed trigger stays buffered until the next keystroke or focus change.
-        idleTimer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: true) { [weak coordinator] _ in
+        // A long pause abandons a half-typed trigger. Eight seconds rather than 2.5: keystrokes render
+        // now, so a stale candidate is harmless until someone finishes it -- but forgetting too eagerly
+        // breaks a trigger typed slowly, which is the complaint that started this rework.
+        idleTimer = Timer.scheduledTimer(withTimeInterval: 8.0, repeats: true) { [weak coordinator] _ in
             _ = coordinator?.handleIdle()
         }
 
