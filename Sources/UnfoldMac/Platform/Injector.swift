@@ -4,6 +4,13 @@ import UnfoldEngine
 
 public protocol TextInjecting {
     func insert(_ text: String, mode: InsertionMode)
+    /// Deletes the characters already on screen -- the trigger the user just typed -- before the
+    /// replacement goes in. Posted as real backspaces so every app sees it, including the ones that
+    /// ignore synthetic paste.
+    func deleteBackward(_ count: Int)
+    /// Types text as key events rather than through the pasteboard. Used for the delimiter the user
+    /// pressed, which must still land after an expansion.
+    func typeLiteral(_ text: String)
 }
 
 /// One pasteboard item as the injector reads it: the types that item carries, with its bytes.
@@ -53,6 +60,9 @@ public final class Injector: TextInjecting {
     /// guarded by changeCount (ruling R-P2-4).
     private static let restoreDelay = 0.25
     private static let vKeyCode = 9
+    /// Backspace. Used to erase the trigger the user typed, which is now visible on screen because
+    /// the adapter renders characters instead of swallowing them.
+    private static let deleteKeyCode = 51
 
     private let clipboard: ClipboardServing
 
@@ -161,6 +171,27 @@ public final class Injector: TextInjecting {
         if let up { clipboard.post(up) }
     }
 
+    public func deleteBackward(_ count: Int) {
+        guard count > 0 else { return }
+        let source = CGEventSource(stateID: .combinedSessionState)
+        for _ in 0..<count {
+            if let down = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(Injector.deleteKeyCode), keyDown: true) {
+                down.flags = []
+                KeystrokeSource.markAsReposted(down)
+                clipboard.post(down)
+            }
+            if let up = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(Injector.deleteKeyCode), keyDown: false) {
+                up.flags = []
+                KeystrokeSource.markAsReposted(up)
+                clipboard.post(up)
+            }
+        }
+    }
+
+    public func typeLiteral(_ text: String) {
+        type(text)
+    }
+
     /// For apps that reject synthetic paste. Setting the unicode string directly sidesteps layout.
     ///
     /// Each event is marked as self-generated *before* it is posted. The tap is a head-insert session
@@ -180,10 +211,13 @@ public final class Injector: TextInjecting {
             // The real label on this SDK is `stringLength:`, not `maxLength:` -- the compiler decided.
             down?.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
             if let down {
+                // Inherited modifier state would turn inserted text into a shortcut.
+                down.flags = []
                 KeystrokeSource.markAsReposted(down)
                 clipboard.post(down)
             }
             if let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) {
+                up.flags = []
                 KeystrokeSource.markAsReposted(up)
                 clipboard.post(up)
             }

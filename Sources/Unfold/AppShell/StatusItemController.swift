@@ -71,10 +71,13 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         self.comboLoadFailure = comboLoadFailure
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
-        statusItem.button?.title = "⌁"
+        // Text rather than a glyph: "⌁" is easy to miss and may render blank in a crowded menu bar,
+        // which is indistinguishable from the app having failed to launch.
+        statusItem.button?.title = "Unfold"
         menu.delegate = self
         statusItem.menu = menu
         refresh()
+        launchLog("status item ready; visible=\(statusItem.isVisible), button=\(statusItem.button != nil)")
     }
 
     /// Rebuilds the menu now. `menuNeedsUpdate` runs the same body when the menu opens, so a tap
@@ -88,6 +91,14 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         rebuild(menu)
     }
 
+    /// Set by the composition root so the hidden-in-a-crowded-menu-bar item is not the only way
+    /// back to the window.
+    var onShowStatus: (() -> Void)?
+
+    @objc private func showStatusWindow() {
+        onShowStatus?()
+    }
+
     private func rebuild(_ menu: NSMenu) {
         menu.removeAllItems()
 
@@ -95,6 +106,13 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         status.isEnabled = false
         menu.addItem(status)
         menu.addItem(.separator())
+
+        if onShowStatus != nil {
+            let show = NSMenuItem(title: "Show Unfold Window", action: #selector(showStatusWindow),
+                                  keyEquivalent: "")
+            show.target = self
+            menu.addItem(show)
+        }
 
         let pauseItem = NSMenuItem(title: coordinator.isPaused ? "Resume Expansion" : "Pause Expansion",
                                    action: #selector(togglePause), keyEquivalent: "p")

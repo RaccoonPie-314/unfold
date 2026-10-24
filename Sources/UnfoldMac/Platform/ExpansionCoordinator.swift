@@ -65,6 +65,10 @@ public final class ExpansionCoordinator {
     private var router: EventRouter
     private let injector: TextInjecting
     private let repost: (CGEvent) -> Void
+    /// Where the deferred expansion work runs. Production defers to the next run-loop turn so the
+    /// tap callback returns before anything is posted; tests pass an inline closure to stay
+    /// deterministic without spinning the run loop.
+    private let perform: (@escaping () -> Void) -> Void
 
     /// The one permission question `UnfoldMac` can ask without importing `ApplicationServices`.
     /// The default is `false` on purpose: a composition root that forgets to inject a predicate
@@ -86,7 +90,8 @@ public final class ExpansionCoordinator {
 
     public init(combos: [Combo], injector: TextInjecting = Injector(),
                 repost: @escaping (CGEvent) -> Void = { $0.post(tap: .cgSessionEventTap) },
-                isTrusted: @escaping () -> Bool = { false }) {
+                isTrusted: @escaping () -> Bool = { false },
+                perform: @escaping (@escaping () -> Void) -> Void = { DispatchQueue.main.async(execute: $0) }) {
         let live = combos.filter(\.enabled)
         // Only text-only combos are registered: a placeholder combo needs a prompt the keyboard
         // layer cannot show, so it counts as inactive instead of expanding into half a template.
@@ -99,12 +104,22 @@ public final class ExpansionCoordinator {
         self.injector = injector
         self.repost = repost
         self.isTrusted = isTrusted
+        self.perform = perform
         self.router = EventRouter(matcher: Matcher(index: TriggerIndex(combos: promptable)))
     }
 
     public var activeCount: Int { active.count }
     public var registeredTriggers: Set<String> { Set(active.map(\.trigger)) }
     public var bufferedCount: Int { heldEvents.count }
+
+    /// Diagnostics for the status window. Without these the app is unfalsifiable from the outside:
+    /// "no expansion" looks identical whether permission is missing, the tap is dead, or the tap is
+    /// fine and nothing matched. These three counts separate those cases.
+    public private(set) var keystrokesSeen = 0
+    public private(set) var lastEventAt: Date?
+    public private(set) var lastRouting: String?
+    public private(set) var lastExpansion: String?
+    public private(set) var lastExpansionAt: Date?
 
     public var tapState: TapState {
         guard let source else { return .detached }
@@ -123,40 +138,107 @@ public final class ExpansionCoordinator {
     /// The tap's decision function. Everything here runs on the thread that attached the tap,
     /// re-entrantly at most once per re-posted event (see the class doc and `KeystrokeSource.repostMark`).
     public func handle(_ event: RoutedEvent, flags: CGEventFlags, original: CGEvent) -> TapOutcome {
+        // Counted before the pause check so the status window can prove the tap is alive even while
+        // expansion is paused -- that is exactly the moment the distinction matters.
+        keystrokesSeen += 1
+        lastEventAt = Date()
+        let outcome = decide(event, flags: flags, original: original)
+        trace(event, flags, outcome)
+        return outcome
+    }
+
+    /// One line per event, so a failed first run can be diagnosed from a file instead of a guessing
+    /// game. Bounded by truncation rather than rotation: this is bring-up instrumentation.
+    private func trace(_ event: RoutedEvent, _ flags: CGEventFlags, _ outcome: TapOutcome) {
+        let summary: String
+        switch event {
+        case .keyDown(let character, let code):
+            summary = "down '\(character)' u+\(character.unicodeScalars.first.map { String($0.value, radix: 16) } ?? "?") code=\(code)"
+        case .keyUp(let code):
+            summary = "up code=\(code)"
+        case .other:
+            summary = "other"
+        }
+        let decision: String
+        switch outcome {
+        case .pass: decision = "pass"
+        case .swallow: decision = "SWALLOW"
+        case .repost(let events, thenPass: _): decision = "repost(\(events.count))"
+        }
+        lastRouting = "\(summary) → \(decision) buffer=\(heldEvents.count)"
+        appendTrace("\(lastRouting) flags=\(flags.rawValue)\n")
+    }
+
+    private func appendTrace(_ line: String) {
+        let path = "/tmp/unfold-events.log"
+        guard let data = line.data(using: .utf8) else { return }
+        if let handle = FileHandle(forWritingAtPath: path) {
+            if handle.seekToEndOfFile() > 400_000 {
+                try? handle.truncate(atOffset: 0)
+                handle.seek(toFileOffset: 0)
+            }
+            handle.write(data)
+            try? handle.close()
+        } else {
+            try? data.write(to: URL(fileURLWithPath: path))
+        }
+    }
+
+    private func decide(_ event: RoutedEvent, flags: CGEventFlags, original: CGEvent) -> TapOutcome {
         guard !isPaused else { return .pass(original) }
 
+        // Measured before routing: on an expansion the router clears the buffer, and this is how many
+        // characters are already sitting on screen waiting to be replaced.
+        let renderedCount = router.typedCount
+
         switch router.route(event, flags: flags) {
-        case .passThrough:
+        case .passThrough, .swallowAndRecord, .releaseThenPass:
+            // Nothing is held back any more. The old design swallowed a trigger prefix so it never
+            // flickered on screen; the cost was that typing went invisible until a match, and a pause
+            // erased what you had typed. Now every keystroke renders, the matcher shadows what the app
+            // received, and only an expansion rewrites anything.
+            if case .keyDown(let character, _) = event {
+                router.noteRendered(character)
+            }
             return .pass(original)
 
-        case .swallowAndRecord:
-            // Only the keydown is held. A keyup is swallowed to keep the target app from seeing a
-            // press it never saw the start of, and it must not be re-posted on its own.
-            if case .keyDown = event { heldEvents.append(original) }
+        case .expandThenPass(let combo, _):
+            // The delimiter is swallowed: it is re-typed after the replacement so the space or
+            // punctuation the user pressed still lands, in the right order.
+            let closing = delimiter(in: event)
+            // Tell the matcher what the document ends with once the expansion has run. Without this
+            // it believes the last character typed was the trigger's final letter -- a word character
+            // -- so the *next* word starts mid-word and never matches. That is why expansion worked
+            // exactly once: the first trigger poisoned the boundary for every one after it.
+            if let closing {
+                router.noteRendered(closing)
+            }
+            scheduleExpansion(combo, deleting: renderedCount, delimiter: closing)
             return .swallow
+        }
+    }
 
-        case .releaseThenPass(let codes):
-            // F3 at the coordinator hop: `codes` names events eaten earlier, so they lead the
-            // outcome in the order they were eaten, and `original` -- the event in hand -- trails
-            // them. We deliberately do NOT post the released events here: an outcome produced
-            // inside the tap callback is posted by the callback's `.repost` arm, and posting in
-            // both places would type the released characters twice. The drains are the opposite
-            // case -- they run outside the callback with no one else to post -- so `drainRouter`
-            // does post.
-            let events = take(count: codes.count)
-            return .repost(events, thenPass: original)
+    private func delimiter(in event: RoutedEvent) -> Character? {
+        if case .keyDown(let character, _) = event { return character }
+        return nil
+    }
 
-        case .expandThenPass(let combo, let codes):
-            precondition(codes.isEmpty,
-                         "the matcher never emits a release before an expansion; see Plan 1 rule 3")
-            _ = take(count: codes.count)
-            // Everything still buffered belongs to the trigger being replaced, so it is dropped,
-            // not reposted. This is the one place the buffer is discarded rather than returned --
-            // R4 is not violated because the keystrokes were not lost: they were *answered*, by
-            // the expansion text the injector is about to place.
-            heldEvents.removeAll()
-            injector.insert(composedText(for: combo), mode: combo.insertion)
-            return .repost([], thenPass: original)
+    /// Erase the typed trigger, insert the replacement, then re-type the delimiter.
+    ///
+    /// Deferred to the next run-loop turn so the tap callback returns before anything is posted --
+    /// posting from inside the callback would re-enter it. The posted events are marked, so the tap
+    /// short-circuits them instead of matching its own output.
+    private func scheduleExpansion(_ combo: Combo, deleting count: Int, delimiter: Character?) {
+        let text = composedText(for: combo)
+        lastExpansion = text
+        lastExpansionAt = Date()
+
+        perform { [injector] in
+            injector.deleteBackward(count)
+            injector.insert(text, mode: combo.insertion)
+            if let delimiter {
+                injector.typeLiteral(String(delimiter))
+            }
         }
     }
 

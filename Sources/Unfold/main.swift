@@ -2,14 +2,29 @@ import AppKit
 import UnfoldEngine
 import UnfoldMac
 
+/// Temporary launch tracing for the first live-tap bring-up; remove before release.
+func launchLog(_ message: String) {
+    let path = "/tmp/unfold-launch.log"
+    let line = "\(Date().formatted(date: .omitted, time: .standard)) \(message)\n"
+    if let handle = FileHandle(forWritingAtPath: path) {
+        handle.seekToEndOfFile()
+        handle.write(Data(line.utf8))
+        try? handle.close()
+    } else {
+        try? line.write(toFile: path, atomically: true, encoding: .utf8)
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: StatusItemController?
+    private var statusWindow: StatusWindowController?
     private var permissionTimer: Timer?
     private var idleTimer: Timer?
     private var focusObserver: NSObjectProtocol?
     private var coordinator: ExpansionCoordinator?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        launchLog("didFinishLaunching; bundle=\(Bundle.main.bundleIdentifier ?? "nil"), trusted=\(PermissionFlow.isTrusted)")
         // A missing file is a normal first run; a corrupt or unreadable one is not. The failure is
         // carried into the menu instead of being swallowed into an empty library, which used to read
         // "0 combos active" -- the same screen as a healthy install with nothing configured.
@@ -28,6 +43,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let statusItem = StatusItemController(coordinator: coordinator,
                                               comboLoadFailure: comboLoadFailure)
         self.statusItem = statusItem
+        launchLog("statusItem created; combos=\(file.combos.count)")
+
+        // The window is the app's only visible surface, and the only thing that makes a failed
+        // first run diagnosable: it reports permission, tap state, and -- the decisive number --
+        // how many keystrokes the tap has actually received.
+        let statusWindow = StatusWindowController(coordinator: coordinator)
+        self.statusWindow = statusWindow
+        statusItem.onShowStatus = { [weak statusWindow] in statusWindow?.show() }
+        statusWindow.show()
 
         // Task 6's idle drain runs on the main run loop, the thread that hosts the tap. Without it a
         // half-typed trigger stays buffered until the next keystroke or focus change.
@@ -62,6 +86,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
+launchLog("activationPolicy=\(app.activationPolicy().rawValue) (0=regular 1=accessory 2=prohibited)")
 let delegate = AppDelegate()
 app.delegate = delegate
+launchLog("delegate set; entering run()")
 app.run()

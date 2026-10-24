@@ -41,6 +41,29 @@ public struct Matcher: Sendable {
         return pending.map { MatchAction.emit($0) }
     }
 
+    /// A full teardown: nothing buffered, and the next keystroke starts a new word.
+    ///
+    /// Distinct from `reset()` on purpose. `reset()` keeps the boundary where the released text puts
+    /// it, which is right when the same field keeps being typed into. `forget()` is for a drain that
+    /// follows a focus change or the app being paused -- the released characters went to the *old*
+    /// field, so letting the boundary stay closed there means the next word typed in the new field
+    /// can never match. That was a live bug: after any app switch, `addr ` stopped expanding until a
+    /// space or punctuation was typed first.
+    public mutating func forget() {
+        buffer = ""
+        lastEmitted = nil
+    }
+
+    /// Tell the machine a character reached the document.
+    ///
+    /// The adapter renders every keystroke now -- it no longer swallows a prefix -- so the boundary
+    /// must follow what the user actually sees. Without this the engine's `lastEmitted` would lag at
+    /// the last *emitted* character and `atBoundary` would answer questions about text that is no
+    /// longer the most recent thing in the field.
+    public mutating func noteRendered(_ character: Character) {
+        lastEmitted = character
+    }
+
     private var atBoundary: Bool {
         guard let lastEmitted else { return true }
         return !isWordCharacter(lastEmitted)

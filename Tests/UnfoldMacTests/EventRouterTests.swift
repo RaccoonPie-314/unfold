@@ -115,6 +115,34 @@ final class EventRouterTests: XCTestCase {
                        "a drain must discard the matcher's prefix, not keep it live")
     }
 
+    /// The live-bring-up bug, pinned. After a focus-change drain the released letters stayed in
+    /// `lastEmitted`, so the word boundary was closed and *every* letter of the next word passed
+    /// through: `addr ` stopped expanding after any app switch, permanently, until the user typed a
+    /// space or punctuation first. A drain means the next word starts fresh.
+    func testAFocusDrainLetsANewWordInTheNewFieldMatch() {
+        let addr = combo("addr", "123 Main St")
+        var subject = router([addr])
+        _ = subject.route(.keyDown("a", 0), flags: [])
+        _ = subject.route(.keyDown("d", 2), flags: [])
+        _ = subject.drainForFocusChange()
+
+        XCTAssertEqual(subject.route(.keyDown("a", 0), flags: []), .swallowAndRecord,
+                       "the first letter of a new word must be able to start a trigger")
+        _ = subject.route(.keyDown("d", 2), flags: [])
+        _ = subject.route(.keyDown("d", 2), flags: [])
+        _ = subject.route(.keyDown("r", 15), flags: [])
+        XCTAssertEqual(subject.route(.keyDown(" ", 49), flags: []), .expandThenPass(addr, []))
+    }
+
+    func testAnIdleDrainAlsoLetsANewWordMatch() {
+        let addr = combo("addr", "123 Main St")
+        var subject = router([addr])
+        _ = subject.route(.keyDown("a", 0), flags: [])
+        XCTAssertEqual(subject.drainForIdle(), [0])
+
+        XCTAssertEqual(subject.route(.keyDown("a", 0), flags: []), .swallowAndRecord)
+    }
+
     // MARK: - Fix round 1, finding A: the two release paths inside `route` had the same bug
 
     /// The reviewer's repro, verbatim. A real Shift press reaches the router as `.other`, which

@@ -36,6 +36,17 @@ public struct EventRouter {
 
     public var bufferedCount: Int { ledger.pendingCount }
 
+    /// How many characters the user has typed since the current candidate started. The adapter needs
+    /// this at expansion time: those characters are already on screen, so exactly that many must be
+    /// deleted before the replacement goes in.
+    public var typedCount: Int { matcher.buffer.count }
+
+    /// Records that a character reached the document, so the boundary reflects the user's screen
+    /// rather than the last character the engine chose to emit.
+    public mutating func noteRendered(_ character: Character) {
+        matcher.noteRendered(character)
+    }
+
     public mutating func route(_ event: RoutedEvent, flags: CGEventFlags) -> RoutingDecision {
         switch event {
         case .other:
@@ -67,15 +78,20 @@ public struct EventRouter {
     /// the app received the re-posted "ad" *and* the full replacement, duplicating the user's text.
     /// Discarding `matcher.reset()`'s release actions is deliberate: those characters are the same
     /// ones `releaseAll()` already returned to the caller.
+    ///
+    /// `forget()` rather than `reset()`: a drain happens on a focus change or a pause, so the
+    /// released characters went to a different field (or an earlier moment). Keeping the boundary
+    /// closed by them made the next word in the new field unmatchable -- the live bug where `addr `
+    /// stopped expanding after every app switch.
     public mutating func drainForIdle() -> [Int] {
         let released = ledger.releaseAll()
-        matcher.reset()
+        matcher.forget()
         return released
     }
 
     public mutating func drainForFocusChange() -> [Int] {
         let released = ledger.releaseAll()
-        matcher.reset()
+        matcher.forget()
         return released
     }
 
