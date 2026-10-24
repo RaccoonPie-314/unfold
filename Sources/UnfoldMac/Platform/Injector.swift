@@ -93,6 +93,22 @@ public final class Injector: TextInjecting {
         }
     }
 
+    /// Bring-up instrumentation: what the injector captured and whether the restore actually ran.
+    /// The clipboard is the one place where a silent mistake destroys the user's data, so the
+    /// decision trail is worth a file while this is being verified.
+    static func injectTrace(_ message: String) {
+        let path = "/tmp/unfold-inject.log"
+        let line = "\(Date().formatted(date: .omitted, time: .standard)) \(message)\n"
+        guard let data = line.data(using: .utf8) else { return }
+        if let handle = FileHandle(forWritingAtPath: path) {
+            handle.seekToEndOfFile()
+            handle.write(data)
+            try? handle.close()
+        } else {
+            try? data.write(to: URL(fileURLWithPath: path))
+        }
+    }
+
     private func paste(_ text: String) {
         // Finding E, rule 3: two expansions inside the restore delay used to lose the user's payload
         // for good -- the second capture read the *first snippet* off the board, so the deferred
@@ -100,9 +116,9 @@ public final class Injector: TextInjecting {
         // capture sees what the first expansion captured.
         flushPendingRestore()
         let saved = capture()
+        Self.injectTrace("capture: items=\(saved.count) types=\(saved.map { $0.count })")
         clipboard.clearContents()
         clipboard.appendItem([(.string, Data(text.utf8))])
-        let ourCount = clipboard.changeCount
         postCmdV()
 
         // Captures the clipboard, the snapshot and the changeCount -- and deliberately not `self`, so
@@ -110,7 +126,15 @@ public final class Injector: TextInjecting {
         lastRestoreGeneration += 1
         let generation = lastRestoreGeneration
         pendingRestore = (generation, { [clipboard] in
-            guard clipboard.changeCount == ourCount else { return }
+            // Content, not changeCount. The counter moves for reasons that have nothing to do with
+            // the user copying anything -- a clipboard manager, Universal Clipboard, an app touching
+            // the pasteboard -- and the old guard treated every one of those as "the user copied
+            // something new", skipped the restore, and left our snippet where their image had been.
+            // Verified live: the board was restored only after this changed.
+            let stillOurs = clipboard.itemCount == 1
+                && clipboard.data(forItem: 0, type: .string).map { $0 == Data(text.utf8) } == true
+            Injector.injectTrace("restore attempt: saved=\(saved.count) stillOurs=\(stillOurs)")
+            guard stillOurs else { return }
             Injector.restore(saved, to: clipboard)
         })
         // `self` is captured strongly on purpose, and only for the length of the delay: if the
