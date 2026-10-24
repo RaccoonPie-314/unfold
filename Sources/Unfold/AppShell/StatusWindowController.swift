@@ -120,6 +120,11 @@ final class StatusWindowController: NSWindowController, NSWindowDelegate {
         let selfTestButton = NSButton(title: "Run Self-Test", target: self, action: #selector(runSelfTest))
         selfTestButton.bezelStyle = .rounded
 
+        // The safety check that matters most: a keyboard layer that eats Ctrl-C is worse than no
+        // expander. Only real Control-C events prove the tap lets them through.
+        let controlCButton = NSButton(title: "Test Ctrl-C in Terminal", target: self, action: #selector(testControlC))
+        controlCButton.bezelStyle = .rounded
+
         let quitButton = NSButton(title: "Quit", target: self, action: #selector(quit))
         quitButton.bezelStyle = .rounded
 
@@ -127,7 +132,7 @@ final class StatusWindowController: NSWindowController, NSWindowDelegate {
         primaryButtons.orientation = .horizontal
         primaryButtons.spacing = 8
 
-        let secondaryButtons = NSStackView(views: [selfTestButton, revealAppButton, combosButton, quitButton])
+        let secondaryButtons = NSStackView(views: [selfTestButton, controlCButton, revealAppButton, combosButton, quitButton])
         secondaryButtons.orientation = .horizontal
         secondaryButtons.spacing = 8
 
@@ -265,6 +270,30 @@ final class StatusWindowController: NSWindowController, NSWindowDelegate {
                 self?.refresh()
             }
         }
+    }
+
+    @objc private func testControlC() {
+        window?.orderOut(nil)
+        let terminal = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Terminal").first
+        terminal?.activate(options: [.activateIgnoringOtherApps])
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            StatusWindowController.postControlC()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                self?.show()
+                self?.refresh()
+            }
+        }
+    }
+
+    private static func postControlC() {
+        let source = CGEventSource(stateID: .combinedSessionState)
+        let down = CGEvent(keyboardEventSource: source, virtualKey: 8, keyDown: true)
+        let up = CGEvent(keyboardEventSource: source, virtualKey: 8, keyDown: false)
+        down?.flags = .maskControl
+        up?.flags = .maskControl
+        down?.post(tap: .cgSessionEventTap)
+        usleep(30_000)
+        up?.post(tap: .cgSessionEventTap)
     }
 
     private static func postSelectAll() {
