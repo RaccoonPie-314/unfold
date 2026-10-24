@@ -56,14 +56,16 @@ private func forwardedEvent(_ outcome: TapOutcome) -> CGEvent? {
 }
 
 final class ExpansionCoordinatorTests: XCTestCase {
-    private func subject(_ combos: [Combo])
+    private func subject(_ combos: [Combo],
+                         isTrusted: @escaping () -> Bool = { true })
         -> (ExpansionCoordinator, FakeInjector, RepostRecorder) {
         let injector = FakeInjector()
         let recorder = RepostRecorder()
         let coordinator = ExpansionCoordinator(
             combos: combos,
             injector: injector,
-            repost: { recorder.record($0) }
+            repost: { recorder.record($0) },
+            isTrusted: isTrusted
         )
         coordinator.resume()
         return (coordinator, injector, recorder)
@@ -447,6 +449,64 @@ final class ExpansionCoordinatorTests: XCTestCase {
         probe.deniesCreate = false
         XCTAssertTrue(coordinator.attachTap(bridge: probe.bridge()),
                       "a failed attach must not make the next one unable to try again")
+        XCTAssertEqual(coordinator.tapState, .live)
+        coordinator.detachTap()
+    }
+
+    // MARK: - Fix round 1, finding 1: trust is a guarantee inside the coordinator
+
+    /// Caller discipline was the whole gate: only the menu checked permission, so any other caller of
+    /// `attachTap()` could create a system-wide tap in an untrusted process. The injected predicate is
+    /// the guarantee, and its refusal must be observable, not merely a `false` the caller may ignore.
+    func testAnUntrustedAttachReturnsFalseAndCreatesNothing() {
+        let probe = BridgeProbe()
+        probe.portCreations = 1
+        let coordinator = ExpansionCoordinator(
+            combos: [combo("addr", parts: [textPart("123 Main St")])],
+            isTrusted: { false }
+        )
+
+        XCTAssertFalse(coordinator.attachTap(bridge: probe.bridge()))
+        XCTAssertEqual(probe.creations, 0,
+                       "an untrusted attach must not reach CGEvent.tapCreate")
+        XCTAssertEqual(probe.enablements, 0,
+                       "nothing was created, so there is nothing to switch on")
+        XCTAssertEqual(coordinator.tapState, .detached)
+        XCTAssertEqual(coordinator.tapRefusalReason, .accessibilityNotTrusted,
+                       "the reason has to be published, not only answered with false")
+    }
+
+    /// The default exists so a composition root that forgets to inject permission fails closed. A
+    /// default of `true` would make every forgotten call site the old caller-discipline bug again.
+    func testAForgottenTrustInjectionFailsClosed() {
+        let probe = BridgeProbe()
+        probe.portCreations = 1
+        let coordinator = ExpansionCoordinator(
+            combos: [combo("addr", parts: [textPart("123 Main St")])]
+        )
+
+        XCTAssertFalse(coordinator.attachTap(bridge: probe.bridge()))
+        XCTAssertEqual(probe.creations, 0,
+                       "the default trust predicate must deny instead of allowing a tap")
+        XCTAssertEqual(coordinator.tapRefusalReason, .accessibilityNotTrusted)
+    }
+
+    func testATrustedAttachClearsAnEarlierRefusal() {
+        let probe = BridgeProbe()
+        probe.portCreations = 1
+        var trusted = false
+        let coordinator = ExpansionCoordinator(
+            combos: [combo("addr", parts: [textPart("123 Main St")])],
+            isTrusted: { trusted }
+        )
+
+        XCTAssertFalse(coordinator.attachTap(bridge: probe.bridge()))
+        XCTAssertEqual(coordinator.tapRefusalReason, .accessibilityNotTrusted)
+
+        trusted = true
+        XCTAssertTrue(coordinator.attachTap(bridge: probe.bridge()))
+        XCTAssertNil(coordinator.tapRefusalReason,
+                     "a successful attach must not keep publishing a stale refusal")
         XCTAssertEqual(coordinator.tapState, .live)
         coordinator.detachTap()
     }

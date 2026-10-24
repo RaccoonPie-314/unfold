@@ -45,6 +45,19 @@ public final class ExpansionCoordinator {
         case givenUp
     }
 
+    /// Why `attachTap()` refused to create a tap. Published rather than returned as a bare `false`
+    /// so a menu can say *why* expansion did not start, not only that it did not.
+    public enum TapRefusalReason: Equatable {
+        case accessibilityNotTrusted
+
+        public var message: String {
+            switch self {
+            case .accessibilityNotTrusted:
+                return "Accessibility permission is not granted"
+            }
+        }
+    }
+
     public let combos: [Combo]
     public let active: [Combo]
     public let inactivePlaceholderCount: Int
@@ -52,6 +65,16 @@ public final class ExpansionCoordinator {
     private var router: EventRouter
     private let injector: TextInjecting
     private let repost: (CGEvent) -> Void
+
+    /// The one permission question `UnfoldMac` can ask without importing `ApplicationServices`.
+    /// The default is `false` on purpose: a composition root that forgets to inject a predicate
+    /// fails closed, so the forgotten call site cannot create a system-wide tap. Task 7's shell
+    /// injects `PermissionFlow.isTrusted`; the gate itself now lives in `attachTap()`.
+    private let isTrusted: () -> Bool
+
+    /// Set when `attachTap()` refuses, cleared when it succeeds. Read by the menu/host so a refusal
+    /// carries a reason; `tapState` alone cannot distinguish "untrusted" from "not asked yet".
+    public private(set) var tapRefusalReason: TapRefusalReason?
 
     /// The exact events behind the router's ledger, in the same order. The two are popped in
     /// lockstep; every transition below keeps `heldEvents.count == router.bufferedCount` or
@@ -62,7 +85,8 @@ public final class ExpansionCoordinator {
     public private(set) var isPaused = true
 
     public init(combos: [Combo], injector: TextInjecting = Injector(),
-                repost: @escaping (CGEvent) -> Void = { $0.post(tap: .cgSessionEventTap) }) {
+                repost: @escaping (CGEvent) -> Void = { $0.post(tap: .cgSessionEventTap) },
+                isTrusted: @escaping () -> Bool = { false }) {
         let live = combos.filter(\.enabled)
         // Only text-only combos are registered: a placeholder combo needs a prompt the keyboard
         // layer cannot show, so it counts as inactive instead of expanding into half a template.
@@ -74,6 +98,7 @@ public final class ExpansionCoordinator {
         self.inactivePlaceholderCount = live.count - promptable.count
         self.injector = injector
         self.repost = repost
+        self.isTrusted = isTrusted
         self.router = EventRouter(matcher: Matcher(index: TriggerIndex(combos: promptable)))
     }
 
@@ -174,6 +199,10 @@ public final class ExpansionCoordinator {
     /// `KeystrokeSource.coreGraphicsTapBridge`. Starting a real tap is Task 7's gated decision --
     /// nothing in tests takes this path.
     ///
+    /// The gate is the injected `isTrusted` predicate, checked inside the bridge-taking overload so
+    /// every caller passes through it. A refusal returns false, publishes `tapRefusalReason`, and
+    /// creates no port, no source, and no run-loop source.
+    ///
     /// `@discardableResult` was dropped during Task 6's review (finding F): whether the tap came up is
     /// the answer Task 7 has to render, and a call site that ignores it is the bug.
     public func attachTap() -> Bool {
@@ -191,6 +220,15 @@ public final class ExpansionCoordinator {
         // pause/restart calls arrive on main -- the exact race Task 5's review refused to hand back.
         precondition(Thread.isMainThread,
                      "the tap must be attached on the main thread; see ExpansionCoordinator's threading decision")
+        // Finding 1: the trust gate belongs here, not in the menu. Before this line the only refusal
+        // lived one layer up, so any other caller could create a system-wide tap in an untrusted
+        // process. Refusing before the source slot is touched also means an untrusted call cannot
+        // revive a source this coordinator is already holding.
+        guard isTrusted() else {
+            tapRefusalReason = .accessibilityNotTrusted
+            return false
+        }
+        tapRefusalReason = nil
         if let source {
             // A source this coordinator already published keeps its slot: its `start()` answers from
             // the port it registered, and discarding it here would strand a live tap.
