@@ -55,6 +55,31 @@ The spec is silent on the points below. Each is decided here so that no pass has
 
 `Sources/UnfoldEngine` is **not** modified by this plan except where a task says otherwise. If a task finds it must, that is a signal the boundary moved and the task should stop and flag it.
 
+## As-built deviations from Tasks 1-5
+
+Recorded during execution; later tasks must respect these.
+
+- **`CGEventFlags`** has no `.command`/`.shift`/`.capsLock` shorthands on this SDK -- real members are
+  `.maskCommand`, `.maskControl`, `.maskAlternate`, `.maskShift`, `.maskAlphaShift`.
+- **Auto-repeat** is `CGEventFlags(rawValue: 0x400)`; a repeated keydown routes to `.other`.
+- **`SwallowLedger` counts** pending keyups per swallowed keydown rather than holding a set.
+- **`EventRouter` drains reset the matcher.** A drain that releases the ledger but leaves
+  `matcher.buffer` populated expands a trigger out of characters the app already received.
+- **`KeystrokeSource` takes an injected `TapBridge`** (three C functions) so `start()` is testable
+  with no live tap. Production must never pass a bridge; `CGEvent.tapCreate`, `tapEnable`, and
+  `tapIsEnabled` appear only inside `coreGraphicsTapBridge`.
+- **Recovery after the re-enable budget latches is `restart()`, not `start()`.** `start()` refilling
+  the budget would be a free refill for anything that polls it.
+- **Inert scalars refuse only non-word characters** (`!isWordCharacter(c) && inertRange(c)`), which is
+  what keeps the tap and `TriggerIndex` agreeing; without the gate, 35 Apple private-use `Lo`
+  scalars were accepted as triggers and could never fire.
+- **The re-enable budget is monotonic** (`CACurrentMediaTime`), because wall-clock time jumps across
+  sleep and would expire the window on every wake.
+- **Task 6 obligations:** consume every drained event list; call `restart()` on the tap's thread, not
+  the menu thread; report `isActive` together with `hasGivenUp`, never alone; do not pass a `bridge`.
+- **Task 7 live checks:** whether the repost marker survives a real session round-trip, and whether a
+  physical arrow/function key really reports the `U+F700` range this SDK's synthetic events do.
+
 ## Deferred to later plans
 
 Combo editor UI, placeholder prompt, signing/notarization/Sparkle, per-app filters, and the `unfoldctl` additions that make the tap inspectable from CI.
