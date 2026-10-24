@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import QuartzCore
 import UnfoldEngine
 
 /// What the tap callback should do with the event in hand, expressed at the CoreGraphics boundary:
@@ -15,8 +16,8 @@ public enum TapOutcome {
 /// This type is deliberately transport-only -- every decision comes from the `handler` Task 6's
 /// coordinator supplies. It must never be started *for real* (no `start()` on the default
 /// `coreGraphicsTapBridge`, so no live `CGEvent.tapCreate`) until turning
-/// a system-wide tap on is approved; that is Task 7's gate. The retry tests do call `start()`, on a stand-in
-/// bridge that cannot reach the tap API -- see `TapBridge`.
+/// a system-wide tap on is approved; that is Task 7's gate. The retry and recovery tests do call `start()` and
+/// `restart()`, on a stand-in bridge that cannot reach the tap API -- see `TapBridge`.
 public final class KeystrokeSource {
     /// keyDown for characters, keyUp so swallowed presses do not leave keys stuck down in the
     /// target app, flagsChanged so a modifier press can drop a half-typed trigger.
@@ -62,12 +63,17 @@ public final class KeystrokeSource {
     private static let keptControlScalars: Set<UInt32> = [0x0009, 0x000A, 0x000D, 0x0020]
 
     /// General Category Cc -- the C0 controls plus DEL through C1.
-    private static let controlRanges: [ClosedRange<UInt32>] = [0x0000...0x001F, 0x007F...0x009F]
+    ///
+    /// The four range lists below are internal for the same reason `isInertScalar` is: the agreement
+    /// sweeps in `KeystrokeSourceTests` enumerate them to build the codepoints they visit, so a scope
+    /// written against the predicate's own data cannot fall behind the predicate. A list restated in the
+    /// test could.
+    static let controlRanges: [ClosedRange<UInt32>] = [0x0000...0x001F, 0x007F...0x009F]
 
     /// General Category Cf: invisible shapers (soft hyphen, zero-width and bidi controls, word
     /// joiners, the annotation anchors, tag characters). No keyboard layout puts one of these in a
     /// payload that means prose, and none of them can be a character of a trigger.
-    private static let formatRanges: [ClosedRange<UInt32>] = [
+    static let formatRanges: [ClosedRange<UInt32>] = [
         0x00AD...0x00AD, 0x0600...0x0605, 0x061C...0x061C, 0x06DD...0x06DD,
         0x070F...0x070F, 0x0890...0x0891, 0x08E2...0x08E2, 0x180E...0x180E,
         0x200B...0x200F, 0x202A...0x202E, 0x2060...0x2064, 0x2066...0x206F,
@@ -78,12 +84,12 @@ public final class KeystrokeSource {
     /// General Category Co, the private-use planes. The BMP block already contains Apple's
     /// function/arrow scalars, which are spelled out below because they are what a real arrow key
     /// actually reports.
-    private static let privateUseRanges: [ClosedRange<UInt32>] = [
+    static let privateUseRanges: [ClosedRange<UInt32>] = [
         0xE000...0xF8FF, 0xF0000...0xFFFFD, 0x100000...0x10FFFD,
     ]
 
     /// Apple's function- and arrow-key block (NSUpArrowFunctionKey and friends).
-    private static let appleFunctionRanges: [ClosedRange<UInt32>] = [0xF700...0xF7FF]
+    static let appleFunctionRanges: [ClosedRange<UInt32>] = [0xF700...0xF7FF]
 
     /// True for a decoded scalar that lies outside anything a keyboard layout means as prose.
     ///
@@ -235,8 +241,8 @@ public final class KeystrokeSource {
     /// which without a seam cannot be produced except by running without Accessibility permission.
     /// With it, `CGEvent.tapCreate`, `CGEvent.tapEnable` and `CGEvent.tapIsEnabled` appear only inside
     /// `coreGraphicsTapBridge` (a grep of this file proves it) and a test installs stand-ins that fail.
-    /// `stop()` and `enableAgain()` go through the seam too, so a source holding a stand-in port can
-    /// never hand a non-tap port to the real tap API.
+    /// `stop()`, `enableAgain()` and `restart()` go through the seam too, so a source holding a
+    /// stand-in port can never hand a non-tap port to the real tap API.
     struct TapBridge {
         /// nil means no tap was created: this is how a process without Accessibility permission fails.
         let create: (CGEventMask, UnsafeMutableRawPointer) -> CFMachPort?
@@ -285,27 +291,57 @@ public final class KeystrokeSource {
     ///    enough that the OS is not being hammered at three attempts a minute forever.
     ///  - Exhaustion latches rather than rate-limits, deliberately. Letting the window expire and
     ///    resuming would not end the slow-callback loop, only stretch it; the tap stays off until a
-    ///    person or a coordinator calls `start()`, which is `restart()` below.
+    ///    person or a coordinator asks for it back, and that call is `KeystrokeSource.restart()` -- the
+    ///    budget half of which is `restart()` below. `start()` reopens the latch too, but only on the
+    ///    path that creates a tap: a latched tap still has its port registered, so `start()`'s guard
+    ///    answers from the port and control never reaches the `restart()` at its bottom.
     struct ReEnableBudget {
         static let maximumAttempts = 3
         static let window: TimeInterval = 60
 
-        private var attempts: [Date] = []
+        /// The instant the window is measured from: `CACurrentMediaTime()`, seconds on a clock that
+        /// counts from boot.
+        ///
+        /// This used to be `Date()`, and a `Date` is the calendar, not a clock. It steps when the user
+        /// changes the date or NTP corrects a drift, and it keeps ticking behind a closed lid: a Mac
+        /// that sleeps for an hour wakes to find every recorded attempt older than the window, so the
+        /// budget hands a persistently slow callback three fresh attempts on every wake. That is the
+        /// stretched-out shape of the loop the latch above exists to end. A step backwards is worse
+        /// still -- an attempt dated in the future reads as "inside the window" for as long as the
+        /// offset is, so ordinary load can be refused for it.
+        ///
+        /// Why this clock and not the other two candidates. The window asks whether the callback has
+        /// had 60 seconds of real, event-delivering time to prove it can keep up, and `CACurrentMediaTime()`
+        /// (mach-absolute-time based) does not advance while the system sleeps, so sleep is never
+        /// counted as evidence that the callback recovered. `ContinuousClock` is monotonic and immune
+        /// to the calendar, but it keeps counting across sleep, so it would fix the clock-change half
+        /// and not the sleep half. `DispatchTime.now(uptimeNanoseconds:)` has the semantics preferred
+        /// here but arrives in nanoseconds, which puts a unit conversion inside every comparison;
+        /// `CACurrentMediaTime()` is already in seconds, which is the unit `window` is written in.
+        static var monotonicNow: TimeInterval { CACurrentMediaTime() }
+
+        /// The instants attempts were made, oldest first, in `monotonicNow` units -- never calendar
+        /// readings. Readable to the tests for one reason: which clock the tap really stamps with is
+        /// only observable from what got stored, and
+        /// `testTheBudgetIsDrivenByAMonotonicClockAndNotTheCalendar` reads it for exactly that.
+        private(set) var attempts: [TimeInterval] = []
         private(set) var hasGivenUp = false
 
-        /// A disable arrived at `now`: switch the tap back on through `enable` if the window still has
-        /// room, and answer whether the tap is live -- which is the value the caller publishes as
-        /// `isActive`. When there is no room, `enable` is not called at all.
+        /// A disable arrived at `now` -- a `monotonicNow` reading, which is why the parameter is a
+        /// `TimeInterval` and not a `Date`: handing the window a calendar value is the bug this closed.
+        /// Switch the tap back on through `enable` if the window still has room, and answer whether the
+        /// tap is live -- which is the value the caller publishes as `isActive`. When there is no room,
+        /// `enable` is not called at all.
         ///
         /// The outcome of an attempt goes to the return value and nowhere else: it never touches
         /// `attempts`. That is the hole round 1 fell into -- it decayed the count whenever a re-enable
         /// observably took, and a persistently slow callback produces a success and a fresh timeout in
         /// the same breath, so it was re-enabled forever. "It took" is not evidence that it can keep up;
-        /// only time passing is.
+        /// only time passing is, and only time a calendar change cannot fake.
         @discardableResult
-        mutating func recover(at now: Date, enable: () -> Bool) -> Bool {
+        mutating func recover(at now: TimeInterval, enable: () -> Bool) -> Bool {
             if hasGivenUp { return false }
-            attempts = attempts.filter { now.timeIntervalSince($0) < Self.window }
+            attempts = attempts.filter { now - $0 < Self.window }
             guard attempts.count < Self.maximumAttempts else {
                 hasGivenUp = true
                 return false
@@ -314,8 +350,10 @@ public final class KeystrokeSource {
             return enable()
         }
 
-        /// The only path back from `hasGivenUp`, and `start()` is the only caller: a deliberate request
-        /// for the tap, not the callback negotiating with itself.
+        /// The only path back from `hasGivenUp`, and it has two callers, both a deliberate request for
+        /// the tap rather than the callback negotiating with itself: `KeystrokeSource.restart()`, which
+        /// is the documented recovery for a latched tap whose port is still registered, and `start()`
+        /// when it has just created a tap.
         mutating func restart() {
             attempts = []
             hasGivenUp = false
@@ -334,7 +372,7 @@ public final class KeystrokeSource {
 
     /// Read alongside `isActive` by whoever renders the state: `isActive == false` with
     /// `hasGivenUp == false` means "off, and the next timeout will be ridden out", while
-    /// `hasGivenUp == true` means "off, and only a restart brings it back".
+    /// `hasGivenUp == true` means "off, and only `restart()` brings it back".
     private(set) var reEnableBudget = ReEnableBudget()
 
     init(handler: @escaping (RoutedEvent, CGEventFlags, CGEvent) -> TapOutcome,
@@ -371,8 +409,8 @@ public final class KeystrokeSource {
     /// Internal only so the re-entrancy guard and the identity decision are reachable from a test.
     /// The `.repost` arm calls `post(tap:)`, which injects real events into the user's session -- no
     /// test may drive that arm; hand it `.pass` or `.swallow`. The same rule covers the tap itself: a
-    /// test that calls `start()` must inject a stand-in `TapBridge`, so nothing reaches
-    /// `CGEvent.tapCreate`.
+    /// test that calls `start()` or `restart()` must inject a stand-in `TapBridge`, so nothing reaches
+    /// `CGEvent.tapCreate` or `CGEvent.tapEnable`.
     @discardableResult
     func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         // Re-entrancy guard, ahead of every decision: an event this type posted comes straight back
@@ -407,6 +445,11 @@ public final class KeystrokeSource {
     /// whether either had taken: a start that failed left a dead port in `tap`, the `guard tap == nil`
     /// at the top then answered from the wreckage instead of trying again, and the only way back was a
     /// `stop()` nobody had been told to call.
+    ///
+    /// What `start()` is **not**: the recovery for a tap the re-enable budget gave up on. That port is
+    /// still registered, so the guard below answers `isActive` -- false -- and returns; the `restart()`
+    /// at the bottom of this method runs only when this call has just created a tap, i.e. after
+    /// `stop()`. `KeystrokeSource.restart()` is the documented recovery for the latched state.
     @discardableResult
     func start() -> Bool {
         guard tap == nil else { return isActive }
@@ -432,9 +475,39 @@ public final class KeystrokeSource {
         runLoop = loop
         runLoopSource = source
         isActive = true
-        // A deliberate start is the only thing that reopens a budget the recovery gave up on.
+        // Reachable only on this path: a tap that was just created. It reopens a latch the recovery
+        // left closed, which is the point of a `stop()`-then-`start()`; for the latched tap that never
+        // got stopped, `restart()` below is the call.
         reEnableBudget.restart()
         return true
+    }
+
+    /// The documented recovery from a budget that gave up: reopen it and switch the same port back on.
+    ///
+    /// This is the call a person or Task 6's coordinator makes when `isActive` is false and
+    /// `reEnableBudget.hasGivenUp` is true, and it exists because `start()` cannot be that call. When
+    /// the recovery gives up it stops poking the port -- it does not tear it down -- so `tap` is
+    /// non-nil, `start()`'s `guard tap == nil` answers `isActive` (false) and returns, and the
+    /// `restart()` at the bottom of `start()` is unreachable. Round 2 documented that path and
+    /// nothing executed it.
+    ///
+    /// The port is still registered with the run loop it was started on (`stop()` is what un-registers
+    /// it), so switching it on again is the whole recovery: no second `tapCreate`, which would strand
+    /// the first port. Deliberate like `start()` and never called from the callback -- the callback's
+    /// arm is `enableAgain()`, and the budget is what refuses it. With no port at all there is nothing
+    /// to switch, so this defers to `start()`, which owns creation and clears the latch itself.
+    ///
+    /// It clears the window even when the tap is healthy, because that is what "a person asked for the
+    /// tap back" means -- so it is the call to hang off an explicit menu item or a coordinator's
+    /// recovery action, and not the call to put on a timer or in a state-refresh path, which would
+    /// refill the budget as fast as the callback spends it and re-open the loop finding B closed.
+    /// A test that calls it must inject a stand-in `TapBridge`, as for `start()`.
+    @discardableResult
+    func restart() -> Bool {
+        reEnableBudget.restart()
+        guard let port = tap else { return start() }
+        isActive = bridge.enable(port)
+        return isActive
     }
 
     func stop() {
@@ -449,13 +522,22 @@ public final class KeystrokeSource {
     }
 
     /// The body of the out-of-band arm of the callback: one line on purpose, because the budget is the
-    /// only thing that decides and the only path back from `hasGivenUp` is the `restart()` in `start()`.
-    private func enableAgain() {
+    /// only thing that decides, and the only path back from `hasGivenUp` is a deliberate
+    /// `restart()` -- never this method, which is the callback negotiating with itself.
+    ///
+    /// Internal only, like `handle`, so a test can drive a real disable through the same arm the
+    /// callback does rather than hand-poking the budget: the sequence `start()` then four
+    /// `enableAgain()` calls is what a persistently slow callback actually produces. In production it
+    /// is reached from the callback and nowhere else, and a test that calls it must inject a stand-in
+    /// `TapBridge` so the `enable` it performs never reaches `CGEvent.tapEnable`.
+    func enableAgain() {
         guard let tap else { return }
         // `enable` is read out before the mutation so the closure captures the seam and the port, not
         // `self`: `recover` mutates one of self's properties, and a closure that captured self here
         // would be an overlapping access.
         let enable = bridge.enable
-        isActive = reEnableBudget.recover(at: Date()) { enable(tap) }
+        // The budget's clock, not the calendar: see `ReEnableBudget.monotonicNow` for why a `Date()`
+        // here made every window expire across a sleep.
+        isActive = reEnableBudget.recover(at: ReEnableBudget.monotonicNow) { enable(tap) }
     }
 }

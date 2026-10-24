@@ -219,6 +219,32 @@ final class KeystrokeSourceTests: XCTestCase {
 
     // MARK: - The tap and the engine must agree about what a trigger can be
 
+    /// The codepoints the two agreement sweeps visit -- 139,751 of the 1,114,112 the platform can name.
+    ///
+    /// The scope is **derived, not restated**: it is the union of the very range lists `isInertScalar`
+    /// consults, plus the scalars it names outside every range, plus the surrogate plane. That makes it
+    /// exact rather than an approximation, because refusal is
+    /// `!isWordCharacter && unicodeScalars.contains(where: isInertScalar)` -- a character can only be
+    /// refused if one of its scalars is inert, and every inert scalar is in this set. Add a range to the
+    /// predicate and the sweep visits it automatically, which a hand-copied list of ranges in the test
+    /// would not do.
+    ///
+    /// Left out is the ~974,000 codepoints the predicate calls prose: `refuses` is false for them by
+    /// construction, so the exhaustive loop round 2 ran spent ~4.4 s of suite time proving that. Nothing
+    /// is lost by narrowing and that is asserted, not assumed -- `unholdable == 2048` still proves the
+    /// surrogates are the only unreachable part of the space, and `refused.count == 137_665` is the
+    /// exhaustive sweep's own number, so a scope that started missing refusals fails loudly.
+    private func sweptCodepoints() -> [UInt32] {
+        var values: Set<UInt32> = []
+        for ranges in [KeystrokeSource.controlRanges, KeystrokeSource.formatRanges,
+                       KeystrokeSource.privateUseRanges, KeystrokeSource.appleFunctionRanges] {
+            for range in ranges { values.formUnion(range) }
+        }
+        values.formUnion([0x007F, 0xFFFD])  // spelled out by the predicate outside every range
+        values.formUnion(0xD800...0xDFFF)   // Cs: unholdable, and the only part of the space that is
+        return values.sorted()
+    }
+
     /// A whole trigger made of `trigger`, so `TriggerIndex` can be asked whether the engine would take
     /// the character at all.
     private func combo(_ trigger: String) -> Combo {
@@ -235,11 +261,12 @@ final class KeystrokeSourceTests: XCTestCase {
     /// machine's Unicode data classifies them as letters, so a trigger ending in one saved fine while
     /// the tap refused to deliver the keystroke that would have completed it. The user is left holding
     /// a combo that can never fire, which is the defect class `unfoldctl check` was written to reject.
-    /// This sweep is what stops the disagreement from coming back silently.
+    /// This sweep is what stops the disagreement from coming back silently, over the scope that can
+    /// contain one (`sweptCodepoints`).
     func testEveryCharacterTheTapRefusesIsAlsoRejectedAsATrigger() {
         var refused: [Character] = []
         var unholdable = 0
-        for value in UInt32(0)...0x10FFFF {
+        for value in sweptCodepoints() {
             // `Unicode.Scalar` refuses to hold U+D800...U+DFFF, so the surrogate block is the one part of
             // the space no sweep can visit -- and the one part no decoded keystroke can carry, because a
             // lone surrogate has already degraded to U+FFFD by the time the decoder returns a String.
@@ -248,6 +275,9 @@ final class KeystrokeSourceTests: XCTestCase {
         }
         XCTAssertEqual(unholdable, 2048, "the surrogates are the only scalars a sweep cannot construct")
         XCTAssertFalse(refused.isEmpty, "the sweep refused nothing; the predicate is dead code")
+        XCTAssertEqual(refused.count, 137_665,
+                       "the scoped sweep must refuse exactly the set the exhaustive one found; a "
+                         + "different total means the scope fell behind the predicate's own ranges")
 
         let index = TriggerIndex(combos: refused.map { combo(String($0)) })
         let disagreements = index.accepted.map(\.trigger)
@@ -264,7 +294,7 @@ final class KeystrokeSourceTests: XCTestCase {
     /// question three ways -- the predicate, the trigger index, and the production path through `route`.
     func testTheInertRangeCharactersTheEngineCallsWordsAreStillKeystrokes() {
         var wordAndInert: [UInt32] = []
-        for value in UInt32(0)...0x10FFFF {
+        for value in sweptCodepoints() {
             guard let scalar = Unicode.Scalar(value) else { continue }
             if KeystrokeSource.isInertScalar(scalar), isWordCharacter(Character(scalar)) {
                 wordAndInert.append(value)
@@ -297,8 +327,13 @@ final class KeystrokeSourceTests: XCTestCase {
     /// Drives a budget with a fake `enable` so the ceiling is tested as it is applied. `live` is what
     /// the read-back answers -- always true is the shape a persistently slow callback makes: the tap
     /// does come back on, and then times out again immediately.
+    ///
+    /// `now` is seconds on the clock `ReEnableBudget.monotonicNow` reads, fed by hand: that is what
+    /// makes the window arithmetic testable at all. The tests below pin the *policy* -- three in a
+    /// window, the fourth latches, a window that passes ages an attempt out -- and only
+    /// `testTheBudgetIsDrivenByAMonotonicClockAndNotTheCalendar` pins the clock the policy is read from.
     private func recover(_ budget: inout KeystrokeSource.ReEnableBudget,
-                         at now: Date,
+                         at now: TimeInterval,
                          enablements: inout Int,
                          live: Bool = true) -> Bool {
         budget.recover(at: now) { enablements += 1; return live }
@@ -312,18 +347,18 @@ final class KeystrokeSourceTests: XCTestCase {
 
         var budget = KeystrokeSource.ReEnableBudget()
         var enablements = 0
-        let start = Date(timeIntervalSinceReferenceDate: 1_000)
+        let start: TimeInterval = 1_000
         XCTAssertTrue(recover(&budget, at: start, enablements: &enablements))
-        XCTAssertTrue(recover(&budget, at: start.addingTimeInterval(2), enablements: &enablements))
-        XCTAssertTrue(recover(&budget, at: start.addingTimeInterval(4), enablements: &enablements))
+        XCTAssertTrue(recover(&budget, at: start + 2, enablements: &enablements))
+        XCTAssertTrue(recover(&budget, at: start + 4, enablements: &enablements))
         // Three timeouts inside one window is not ordinary load, it is a callback that cannot keep up.
-        XCTAssertFalse(recover(&budget, at: start.addingTimeInterval(6), enablements: &enablements),
+        XCTAssertFalse(recover(&budget, at: start + 6, enablements: &enablements),
                        "a fourth re-enable in the same window is the loop round 1 allowed")
         XCTAssertEqual(enablements, 3, "past the ceiling the tap must not be poked at all")
         XCTAssertTrue(budget.hasGivenUp,
                       "the state the caller must report instead of claiming the tap is live")
         // Given up is a latch, not a rate limit: the window expiring must not restart the hammering.
-        XCTAssertFalse(recover(&budget, at: start.addingTimeInterval(3_600), enablements: &enablements))
+        XCTAssertFalse(recover(&budget, at: start + 3_600, enablements: &enablements))
         XCTAssertEqual(enablements, 3)
     }
 
@@ -332,12 +367,12 @@ final class KeystrokeSourceTests: XCTestCase {
         // enabled again", and a lifetime cap with that reset re-enables a slow callback forever.
         var budget = KeystrokeSource.ReEnableBudget()
         var enablements = 0
-        let start = Date(timeIntervalSinceReferenceDate: 1_000)
+        let start: TimeInterval = 1_000
         for index in 0..<3 {
-            XCTAssertTrue(recover(&budget, at: start.addingTimeInterval(Double(index) * 3),
+            XCTAssertTrue(recover(&budget, at: start + Double(index) * 3,
                                   enablements: &enablements, live: true))
         }
-        XCTAssertFalse(recover(&budget, at: start.addingTimeInterval(9),
+        XCTAssertFalse(recover(&budget, at: start + 9,
                                enablements: &enablements, live: true))
         XCTAssertTrue(budget.hasGivenUp)
     }
@@ -345,12 +380,12 @@ final class KeystrokeSourceTests: XCTestCase {
     func testTimeoutsWiderThanOneWindowNeverAddUpToAShutdown() {
         var budget = KeystrokeSource.ReEnableBudget()
         var enablements = 0
-        let start = Date(timeIntervalSinceReferenceDate: 1_000)
+        let start: TimeInterval = 1_000
         let spacing = KeystrokeSource.ReEnableBudget.window + 1
         // An afternoon of one timeout per window-and-a-bit -- a login transition here, a Spotlight
         // rebuild there -- must keep expanding. This is the property round 1's lifetime-total cap broke.
         for index in 0..<12 {
-            XCTAssertTrue(recover(&budget, at: start.addingTimeInterval(spacing * Double(index)),
+            XCTAssertTrue(recover(&budget, at: start + spacing * Double(index),
                                   enablements: &enablements),
                           "the timeout at +\(Int(spacing * Double(index)))s met a closed budget")
         }
@@ -361,14 +396,17 @@ final class KeystrokeSourceTests: XCTestCase {
     func testOnlyADeliberateRestartReopensAGivenUpBudget() {
         var budget = KeystrokeSource.ReEnableBudget()
         var enablements = 0
-        let start = Date(timeIntervalSinceReferenceDate: 1_000)
+        let start: TimeInterval = 1_000
         for index in 0..<4 {
-            _ = recover(&budget, at: start.addingTimeInterval(Double(index)), enablements: &enablements)
+            _ = recover(&budget, at: start + Double(index), enablements: &enablements)
         }
         XCTAssertTrue(budget.hasGivenUp)
-        XCTAssertFalse(recover(&budget, at: start.addingTimeInterval(86_400), enablements: &enablements))
-        budget.restart() // what `start()` does: a person asked for the tap again
-        XCTAssertTrue(recover(&budget, at: start.addingTimeInterval(86_401), enablements: &enablements))
+        XCTAssertFalse(recover(&budget, at: start + 86_400, enablements: &enablements))
+        // The latch opens for a person asking for the tap back, and for nothing else: at this level
+        // that is `ReEnableBudget.restart()`, which `KeystrokeSource.restart()` calls -- the test below
+        // walks the same thing from the source, through the arm the callback uses.
+        budget.restart()
+        XCTAssertTrue(recover(&budget, at: start + 86_401, enablements: &enablements))
         XCTAssertFalse(budget.hasGivenUp)
     }
 
@@ -449,6 +487,125 @@ final class KeystrokeSourceTests: XCTestCase {
         source.stop()
         XCTAssertEqual(probe.disablements, 1, "stop() goes through the bridge, so no test calls the tap API")
         XCTAssertFalse(source.isActive)
+    }
+
+    // MARK: - The path back from a budget the recovery gave up on
+
+    /// Round 2's contract said `isActive == false` with `hasGivenUp == true` means "only a `start()`
+    /// brings it back", and the re-review is right that the path cannot execute: when the recovery
+    /// gives up, the port is *still registered*, so `start()`'s `guard tap == nil` answers from it,
+    /// returns `isActive` -- false -- and control never reaches the `restart()` at the bottom.
+    ///
+    /// The recovery is `KeystrokeSource.restart()`, not a latch cleared inside `start()`: a `start()`
+    /// that reopened the budget would hand anyone polling it on a timer a free refill, which is the
+    /// loop round 2's ceiling exists to end, and it is the thing round 2's own contract warned against.
+    /// This walks the sequence a persistently slow callback actually leaves behind -- through the same
+    /// arm the C callback uses (`enableAgain`) -- so the path is live here or it is dead code.
+    func testTheDocumentedRecoveryBringsBackATapTheBudgetGaveUpOn() {
+        let probe = TapBridgeProbe()
+        probe.portCreations = 1
+        let source = KeystrokeSource(handler: { _, _, _ in .swallow }, bridge: probe.bridge())
+        XCTAssertTrue(source.start())
+        XCTAssertEqual(probe.enablements, 1, "start() enables and reads back through the seam")
+
+        // Four disables inside one window: three are ridden out, the fourth latches the budget.
+        for _ in 0..<4 { source.enableAgain() }
+        XCTAssertFalse(source.isActive, "the fourth disable reports the tap off")
+        XCTAssertTrue(source.reEnableBudget.hasGivenUp)
+        XCTAssertEqual(probe.enablements, 4, "past the ceiling the port must not be poked at all")
+
+        // Round 2's documented recovery. `start()` answers from the port that is still registered and
+        // returns `isActive`, so it is *not* the path back -- pinned here because the two calls are
+        // otherwise one keystroke of confusion apart, and a coordinator that polls `start()` to work
+        // around the latch would re-open exactly the loop the ceiling closes.
+        XCTAssertFalse(source.start(),
+                       "start() cannot recover a tap it never stopped: the guard returns isActive")
+        XCTAssertFalse(source.isActive, "and the tap stays off")
+        XCTAssertTrue(source.reEnableBudget.hasGivenUp, "a refused start must not clear the latch either")
+        XCTAssertEqual(probe.creations, 1, "a refused start must not create a second tap")
+
+        // The recovery that is documented now: clear the latch and switch the same port back on.
+        XCTAssertTrue(source.restart(),
+                      "the documented recovery must report the tap live again")
+        XCTAssertTrue(source.isActive,
+                      "a latched budget with the port still registered is exactly the state the user is "
+                        + "left in: the tap is off, and a deliberate request has to bring it back")
+        XCTAssertFalse(source.reEnableBudget.hasGivenUp, "recovery must clear the latch")
+        XCTAssertEqual(probe.enablements, 5,
+                       "recovery switches the existing port on through the seam, never CGEvent.tapEnable")
+        XCTAssertEqual(probe.creations, 1,
+                       "recovery switches the existing port back on; a second tapCreate would strand the first")
+
+        // And the tap is usable again: a keystroke still reaches the handler, and the next disable is
+        // treated as a transient instead of being refused.
+        XCTAssertNil(source.handle(type: .keyDown, event: keyDown(carrying: 0x0061)),
+                     "the handler must still be consulted, or the recovered tap is not a live tap")
+        source.enableAgain()
+        XCTAssertTrue(source.isActive, "after a recovery a fresh timeout is a transient, not a refusal")
+    }
+
+    /// The other route back from a latch, and the only one `start()` owns: the tap is stopped, then
+    /// asked for again. This is what makes the `reEnableBudget.restart()` at the bottom of `start()`
+    /// live code rather than the same dead claim moved one call earlier -- `start()` reopens a latch only
+    /// on the path that creates a tap, and only `stop()` puts it in a position to create one.
+    func testStopThenStartReopensALatchedBudget() {
+        let probe = TapBridgeProbe()
+        probe.portCreations = 2
+        let source = KeystrokeSource(handler: { _, _, _ in .swallow }, bridge: probe.bridge())
+        XCTAssertTrue(source.start())
+        for _ in 0..<4 { source.enableAgain() }
+        XCTAssertTrue(source.reEnableBudget.hasGivenUp, "the sequence the finding is about")
+
+        source.stop()
+        XCTAssertEqual(probe.disablements, 1, "stop() switches the port off through the seam")
+        XCTAssertTrue(source.start(), "a fresh tap is a fresh budget")
+        XCTAssertTrue(source.isActive)
+        XCTAssertFalse(source.reEnableBudget.hasGivenUp)
+        XCTAssertEqual(probe.creations, 2, "start() created the second tap, as a stop/start must")
+
+        // and usable, not merely un-latched: the disable after it is ridden out again
+        source.enableAgain()
+        XCTAssertTrue(source.isActive)
+    }
+
+    // MARK: - The clock the window is measured with
+
+    /// Finding B: the budget's intervals are measured on a monotonic clock, because a `Date()` is the
+    /// calendar and the calendar lies. It steps when the user changes the clock or NTP corrects a
+    /// drift, and it keeps counting behind a closed lid: a Mac that sleeps for an hour wakes to find
+    /// every attempt older than the window, which hands a persistently slow callback three fresh
+    /// attempts every wake -- the stretched-out version of the loop round 2's latch exists to end. A
+    /// clock that never moves backwards and does not tick while the machine sleeps is the only one on
+    /// which "the callback had 60 seconds to prove it can keep up" means what it says.
+    ///
+    /// What this test can exercise is the *source*, and it does that with teeth: Apple's reference
+    /// date is 2001-01-01, so calendar seconds are ~7.9e8 while the monotonic clock counts from boot.
+    /// A recorded instant that sits within seconds of the calendar IS the calendar -- restoring `Date()`
+    /// fails here -- and one hours-to-years below it is not. What no unit test on a live Mac can
+    /// produce on demand is the hour behind a closed lid; that half of the property rests on the
+    /// documented behaviour of the clock chosen, and the note says so instead of pretending.
+    func testTheBudgetIsDrivenByAMonotonicClockAndNotTheCalendar() throws {
+        let probe = TapBridgeProbe()
+        probe.portCreations = 1
+        let source = KeystrokeSource(handler: { _, _, _ in .swallow }, bridge: probe.bridge())
+        XCTAssertTrue(source.start())
+        source.enableAgain()
+        source.enableAgain()
+
+        let attempts = source.reEnableBudget.attempts
+        XCTAssertEqual(attempts.count, 2, "two disables, two recorded instants")
+        let recorded = try XCTUnwrap(attempts.last, "an attempt must record the instant it happened")
+        for index in 1..<attempts.count {
+            XCTAssertLessThanOrEqual(attempts[index - 1], attempts[index],
+                                      "the clock never goes backwards, so an attempt can never be "
+                                        + "dated in the future — which is what ages the window")
+        }
+
+        let calendar = Date().timeIntervalSinceReferenceDate
+        XCTAssertGreaterThan(calendar - recorded, 3_600,
+                             "the budget is reading the calendar (seconds since 2001), not a clock that "
+                               + "counts from boot and pauses while the system sleeps: a clock change or "
+                               + "an overnight sleep would then rewrite every window in the budget")
     }
 
 }
