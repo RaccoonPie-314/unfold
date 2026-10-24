@@ -250,6 +250,9 @@ public final class KeystrokeSource {
         /// enablement is observed, never assumed. False means the port exists but is not live.
         let enable: (CFMachPort) -> Bool
         let disable: (CFMachPort) -> Void
+        /// The live enablement read, kept behind the same seam as the writes so a stand-in test bridge
+        /// can answer truthfully about its own port without ever reaching `CGEvent.tapIsEnabled`.
+        let isEnabled: (CFMachPort) -> Bool
     }
 
     static let coreGraphicsTapBridge = TapBridge(
@@ -265,7 +268,8 @@ public final class KeystrokeSource {
             CGEvent.tapEnable(tap: port, enable: true)
             return CGEvent.tapIsEnabled(tap: port)
         },
-        disable: { port in CGEvent.tapEnable(tap: port, enable: false) }
+        disable: { port in CGEvent.tapEnable(tap: port, enable: false) },
+        isEnabled: { port in CGEvent.tapIsEnabled(tap: port) }
     )
 
     // MARK: - Live state
@@ -369,6 +373,17 @@ public final class KeystrokeSource {
     private var runLoop: CFRunLoop?
     private var runLoopSource: CFRunLoopSource?
     private(set) var isActive = false
+
+    /// The live answer to "is this tap switched on right now?", read from the port this source holds.
+    ///
+    /// `isActive` is a cache: it records what the last enable or disable attempt observed, so it can
+    /// say true for a tap macOS silently invalidated. `CGEvent.tapIsEnabled` is the live state, and it
+    /// is what the menu must render. Reading is not attaching: with no port this answers false without
+    /// touching CoreGraphics and without creating anything, so it is safe to call at any time.
+    var isTapEnabled: Bool {
+        guard let tap else { return false }
+        return bridge.isEnabled(tap)
+    }
 
     /// Read alongside `isActive` by whoever renders the state: `isActive == false` with
     /// `hasGivenUp == false` means "off, and the next timeout will be ridden out", while

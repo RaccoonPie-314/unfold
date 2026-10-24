@@ -10,11 +10,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var coordinator: ExpansionCoordinator?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let file = (try? Store(url: Store.defaultURL()).load()) ?? CombosFile(
-            formatVersion: CombosFile.currentFormatVersion, combos: [])
-        let coordinator = ExpansionCoordinator(combos: file.combos)
+        // A missing file is a normal first run; a corrupt or unreadable one is not. The failure is
+        // carried into the menu instead of being swallowed into an empty library, which used to read
+        // "0 combos active" -- the same screen as a healthy install with nothing configured.
+        let file: CombosFile
+        let comboLoadFailure: String?
+        do {
+            file = try Store(url: Store.defaultURL()).load()
+            comboLoadFailure = nil
+        } catch {
+            file = CombosFile(formatVersion: CombosFile.currentFormatVersion, combos: [])
+            comboLoadFailure = String(describing: error)
+        }
+        let coordinator = ExpansionCoordinator(combos: file.combos,
+                                                isTrusted: { PermissionFlow.isTrusted })
         self.coordinator = coordinator
-        let statusItem = StatusItemController(coordinator: coordinator)
+        let statusItem = StatusItemController(coordinator: coordinator,
+                                              comboLoadFailure: comboLoadFailure)
         self.statusItem = statusItem
 
         // Task 6's idle drain runs on the main run loop, the thread that hosts the tap. Without it a

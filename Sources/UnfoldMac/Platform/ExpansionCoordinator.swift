@@ -112,6 +112,14 @@ public final class ExpansionCoordinator {
         return source.reEnableBudget.hasGivenUp ? .givenUp : .disabled
     }
 
+    /// The live counterpart to `tapState`, for the status line that must not rest on a cache.
+    ///
+    /// `tapState` reports what the last attach/re-enable attempt observed. This asks the source's held
+    /// port whether the tap is enabled *now*, so a silently invalidated tap is visible while
+    /// `tapState` still says `.live`. With no source there is no port, so the answer is false -- and
+    /// reading never creates one.
+    public var isTapEnabled: Bool { source?.isTapEnabled ?? false }
+
     /// The tap's decision function. Everything here runs on the thread that attached the tap,
     /// re-entrantly at most once per re-posted event (see the class doc and `KeystrokeSource.repostMark`).
     public func handle(_ event: RoutedEvent, flags: CGEventFlags, original: CGEvent) -> TapOutcome {

@@ -342,6 +342,9 @@ final class ExpansionCoordinatorTests: XCTestCase {
         /// When true, `create` answers nil regardless of the allowance -- a process with no
         /// Accessibility permission.
         var deniesCreate = false
+        /// What the live `isEnabled` read answers for the port. A test flips it to model a tap macOS
+        /// invalidated while `isActive` still says true.
+        var enabled = true
         var log: OrderLog?
 
         func bridge() -> KeystrokeSource.TapBridge {
@@ -362,7 +365,8 @@ final class ExpansionCoordinatorTests: XCTestCase {
                 disable: { [weak self] _ in
                     self?.disablements += 1
                     self?.log?.entries.append("disable")
-                }
+                },
+                isEnabled: { [weak self] _ in self?.enabled ?? false }
             )
         }
     }
@@ -509,5 +513,31 @@ final class ExpansionCoordinatorTests: XCTestCase {
                      "a successful attach must not keep publishing a stale refusal")
         XCTAssertEqual(coordinator.tapState, .live)
         coordinator.detachTap()
+    }
+
+    // MARK: - Fix round 1, finding 2: the live enabled read reaches the source
+
+    /// `tapState` is a cache and can say `.live` while the port is already dead. The status line needs
+    /// a live answer, and the coordinator is the only object the shell holds. Reading it must not
+    /// attach a tap, and a detached coordinator has no port to ask.
+    func testLiveTapEnabledReadsTheHeldSourceAndIsFalseWhenDetached() {
+        let probe = BridgeProbe()
+        probe.portCreations = 1
+        let (coordinator, _, _) = subject([combo("addr", parts: [textPart("123 Main St")])])
+
+        XCTAssertFalse(coordinator.isTapEnabled, "no source means no tap to ask about")
+        XCTAssertEqual(probe.creations, 0, "reading the live state must not attach a tap")
+
+        XCTAssertTrue(coordinator.attachTap(bridge: probe.bridge()))
+        XCTAssertTrue(coordinator.isTapEnabled)
+
+        probe.enabled = false
+        XCTAssertFalse(coordinator.isTapEnabled,
+                       "the live read, not the cached isActive, is what the status line must use")
+        XCTAssertEqual(coordinator.tapState, .live,
+                       "the cached state still says live; that is the lie the live read catches")
+
+        coordinator.detachTap()
+        XCTAssertFalse(coordinator.isTapEnabled)
     }
 }

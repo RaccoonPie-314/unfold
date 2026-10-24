@@ -428,6 +428,10 @@ final class KeystrokeSourceTests: XCTestCase {
         /// The enable read-back stays false until this attempt number: a tap that exists but refuses
         /// to switch on.
         var enableSucceedsFrom = 1
+        /// What the live `isEnabled` read answers for the port. Flipped by a test to simulate a tap
+        /// macOS invalidated without telling `isActive`.
+        var enabled = true
+        private(set) var enabledQueries = 0
 
         func bridge() -> KeystrokeSource.TapBridge {
             KeystrokeSource.TapBridge(
@@ -443,7 +447,12 @@ final class KeystrokeSourceTests: XCTestCase {
                     self.enablements += 1
                     return self.enablements >= self.enableSucceedsFrom
                 },
-                disable: { [weak self] _ in self?.disablements += 1 }
+                disable: { [weak self] _ in self?.disablements += 1 },
+                isEnabled: { [weak self] _ in
+                    guard let self else { return false }
+                    self.enabledQueries += 1
+                    return self.enabled
+                }
             )
         }
     }
@@ -608,4 +617,35 @@ final class KeystrokeSourceTests: XCTestCase {
                                + "an overnight sleep would then rewrite every window in the budget")
     }
 
+    // MARK: - Fix round 1, finding 2: the live enabled check
+
+    /// The menu must ask the tap API, not the cached `isActive`. This accessor answers false when no
+    /// port is held -- and asking must be safe then, not a disguised `start()`. Once a port exists it
+    /// reads that port through the same seam `enable` uses, so a tap macOS silently switched off is
+    /// visible even while `isActive` still says true.
+    func testLiveEnabledIsFalseWithoutAPortAndReadsTheHeldPortOtherwise() {
+        let probe = TapBridgeProbe()
+        probe.portCreations = 1
+        let source = KeystrokeSource(handler: { _, _, _ in .swallow }, bridge: probe.bridge())
+
+        XCTAssertFalse(source.isTapEnabled, "no port means no tap to ask about")
+        XCTAssertEqual(probe.enabledQueries, 0,
+                       "a read with no port must not reach the tap API or create one")
+        XCTAssertEqual(probe.creations, 0, "reading state is not attaching")
+
+        XCTAssertTrue(source.start())
+        XCTAssertTrue(source.isTapEnabled)
+        XCTAssertEqual(probe.enabledQueries, 1, "the answer must come from the held port, live")
+
+        probe.enabled = false
+        XCTAssertFalse(source.isTapEnabled,
+                       "a tap that macOS silently invalidated must read false")
+        XCTAssertTrue(source.isActive,
+                      "the cached isActive is exactly what can lie; the live read is not")
+
+        source.stop()
+        XCTAssertFalse(source.isTapEnabled, "a stopped source holds no port to ask")
+        XCTAssertEqual(probe.enabledQueries, 2,
+                       "stop() drops the port, so the read must not reach the tap API again")
+    }
 }

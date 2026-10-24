@@ -272,7 +272,8 @@ final class InjectorTests: XCTestCase {
             },
             bridge: KeystrokeSource.TapBridge(create: { _, _ in nil },
                                               enable: { _ in false },
-                                              disable: { _ in })
+                                              disable: { _ in },
+                                              isEnabled: { _ in false })
         )
 
         for event in board.posted {

@@ -6,26 +6,37 @@ import UnfoldMac
 /// whether expansion can happen -- is testable without a status item, a tap, or a permission prompt.
 ///
 /// The order is the whole point. No permission outranks everything, because nothing else can work;
-/// the user's own pause outranks the tap's state, because a paused tap is off on purpose. Only a
-/// trusted, unpaused, live tap may say "Listening" -- every other combination names its reason.
+/// the user's own pause outranks the tap's state, because a paused tap is off on purpose. A given-up
+/// budget and a detached tap each name their own reason before the live check is consulted. Only a
+/// trusted, unpaused, attached tap whose port reads enabled *now* may say "Listening" -- the cached
+/// `TapState` alone is not enough, because it can say `.live` for a tap macOS silently invalidated.
 enum MenuStatus: Equatable {
     case notPermitted
     case paused
     case tapGivenUp
+    case notReceivingKeystrokes
     case tapInterrupted
     case tapDetached
     case listening
 
     static func evaluate(isTrusted: Bool,
                          isPaused: Bool,
-                         tapState: ExpansionCoordinator.TapState) -> MenuStatus {
+                         tapState: ExpansionCoordinator.TapState,
+                         isTapEnabled: Bool) -> MenuStatus {
         if !isTrusted { return .notPermitted }
         if isPaused { return .paused }
         switch tapState {
-        case .live: return .listening
-        case .givenUp: return .tapGivenUp
-        case .disabled: return .tapInterrupted
-        case .detached: return .tapDetached
+        case .givenUp:
+            return .tapGivenUp
+        case .detached:
+            // No port exists, so "attached but silent" would be the wrong story: nothing is attached.
+            return .tapDetached
+        case .live, .disabled:
+            // The live read is the last word for a tap that exists. A cached `.live` is exactly what
+            // lied before; a cached `.disabled` whose port still reads enabled is the stale-cache
+            // case in the other direction, and the interrupted text is the honest one there.
+            guard isTapEnabled else { return .notReceivingKeystrokes }
+            return tapState == .live ? .listening : .tapInterrupted
         }
     }
 
@@ -37,10 +48,12 @@ enum MenuStatus: Equatable {
             return "Paused"
         case .tapGivenUp:
             return "Stopped — macOS disabled the tap; choose Pause, then Resume"
+        case .notReceivingKeystrokes:
+            return "not receiving keystrokes — a password field or Secure Input can block expansion"
         case .tapInterrupted:
             return "Interrupted — the tap is off; choose Pause, then Resume"
         case .tapDetached:
-            return "Off — keyboard access is not attached"
+            return "Off — keyboard access is not attached; choose Pause, then Resume"
         case .listening:
             return "Listening"
         }
@@ -49,11 +62,13 @@ enum MenuStatus: Equatable {
 
 final class StatusItemController: NSObject, NSMenuDelegate {
     private let coordinator: ExpansionCoordinator
+    private let comboLoadFailure: String?
     private let statusItem: NSStatusItem
     private let menu = NSMenu()
 
-    init(coordinator: ExpansionCoordinator) {
+    init(coordinator: ExpansionCoordinator, comboLoadFailure: String? = nil) {
         self.coordinator = coordinator
+        self.comboLoadFailure = comboLoadFailure
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
         statusItem.button?.title = "⌁"
@@ -85,8 +100,30 @@ final class StatusItemController: NSObject, NSMenuDelegate {
                                    action: #selector(togglePause), keyEquivalent: "p")
         pauseItem.target = self
         menu.addItem(pauseItem)
-        menu.addItem(NSMenuItem(title: "\(coordinator.activeCount) combos active",
-                                action: nil, keyEquivalent: ""))
+
+        // Finding 3: a budget that gave up used to have no explicit way back from the menu, and the
+        // report's claim that Resume reached `restartTap()` was false (Pause detaches, so Resume
+        // creates a fresh tap). This item calls the coordinator's restart path directly, while the
+        // latched source still holds its port.
+        if coordinator.tapState == .givenUp {
+            let restartItem = NSMenuItem(title: "Restart Keyboard Access",
+                                         action: #selector(restartKeyboardAccess), keyEquivalent: "")
+            restartItem.target = self
+            menu.addItem(restartItem)
+        }
+
+        // Finding 4: a corrupt or unreadable combos.json used to be swallowed by `try?` and rendered
+        // as "0 combos active" -- an empty library instead of a load failure. The failure now takes
+        // the count's place, and Open Combos File stays available to fix the file.
+        if let comboLoadFailure {
+            let failure = NSMenuItem(title: "Combos could not be loaded — \(comboLoadFailure)",
+                                     action: nil, keyEquivalent: "")
+            failure.isEnabled = false
+            menu.addItem(failure)
+        } else {
+            menu.addItem(NSMenuItem(title: "\(coordinator.activeCount) combos active",
+                                    action: nil, keyEquivalent: ""))
+        }
 
         let inactive = coordinator.inactivePlaceholderCount
         if inactive > 0 {
@@ -125,7 +162,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private func statusLine() -> String {
         MenuStatus.evaluate(isTrusted: PermissionFlow.isTrusted,
                             isPaused: coordinator.isPaused,
-                            tapState: coordinator.tapState).text
+                            tapState: coordinator.tapState,
+                            isTapEnabled: coordinator.isTapEnabled).text
     }
 
     @objc private func togglePause() {
@@ -140,19 +178,34 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         refresh()
     }
 
-    /// Trust is refused here, before a tap can exist. `ExpansionCoordinator.attachTap()` lives in
-    /// `UnfoldMac`, which cannot see `PermissionFlow`, so the shell is the layer that enforces it.
+    /// Trust is checked here as well as inside `attachTap()`. The coordinator's injected predicate is
+    /// the guarantee; this guard keeps an untrusted click from even calling into the coordinator and
+    /// leaves the menu's own not-permitted status untouched.
     ///
     /// The coordinator starts paused, so `resume()` comes first; attaching a paused coordinator is
-    /// the trusted-but-deaf state this ordering exists to avoid. If `attachTap()` fails on a tap
-    /// whose re-enable budget has latched, `restartTap()` is the documented recovery -- `start()`
-    /// cannot reach a port that is still registered.
+    /// the trusted-but-deaf state this ordering exists to avoid. Both menu paths that get here have
+    /// just detached (Pause, or a revocation), so `attachTap()` builds a fresh source -- there is no
+    /// latched port for `restartTap()` to recover, which is why the explicit Restart item owns that
+    /// path instead of a fallback here.
     @discardableResult
     private func startExpansion() -> Bool {
         guard PermissionFlow.isTrusted else { return false }
         coordinator.resume()
-        if coordinator.attachTap() { return true }
-        return coordinator.restartTap()
+        return coordinator.attachTap()
+    }
+
+    /// The explicit recovery for a re-enable budget that gave up. `restartTap()` clears the budget and
+    /// switches the still-registered port back on; `attachTap()` cannot, because `start()` answers
+    /// from that port instead of reaching creation. Refuses while untrusted, so a revoked permission
+    /// cannot be bypassed by a stale menu item.
+    @objc private func restartKeyboardAccess() {
+        guard PermissionFlow.isTrusted else {
+            refresh()
+            return
+        }
+        coordinator.resume()
+        _ = coordinator.restartTap()
+        refresh()
     }
 
     @objc private func openCombosFile() {
