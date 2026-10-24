@@ -26,6 +26,10 @@ let package = Package(
             name: "UnfoldMacTests",
             dependencies: ["UnfoldMac", "UnfoldEngine"]
         ),
+        .testTarget(
+            name: "UnfoldTests",
+            dependencies: ["Unfold", "UnfoldMac"]
+        ),
     ],
     // Language mode 5 is deliberate: CGEventTap callbacks are C function pointers and
     // would need @convention(c) isolation work under Swift 6 strict concurrency.
