@@ -125,6 +125,11 @@ final class StatusWindowController: NSWindowController, NSWindowDelegate {
         let controlCButton = NSButton(title: "Test Ctrl-C in Terminal", target: self, action: #selector(testControlC))
         controlCButton.bezelStyle = .rounded
 
+        // Types a partial trigger and then leaves it alone past the idle timeout. This is the exact
+        // shape that crashed the app: the idle timer asked for keystrokes nothing was holding any more.
+        let idleButton = NSButton(title: "Test Idle Timeout", target: self, action: #selector(testIdleTimeout))
+        idleButton.bezelStyle = .rounded
+
         let quitButton = NSButton(title: "Quit", target: self, action: #selector(quit))
         quitButton.bezelStyle = .rounded
 
@@ -132,7 +137,7 @@ final class StatusWindowController: NSWindowController, NSWindowDelegate {
         primaryButtons.orientation = .horizontal
         primaryButtons.spacing = 8
 
-        let secondaryButtons = NSStackView(views: [selfTestButton, controlCButton, revealAppButton, combosButton, quitButton])
+        let secondaryButtons = NSStackView(views: [selfTestButton, idleButton, controlCButton, revealAppButton, combosButton, quitButton])
         secondaryButtons.orientation = .horizontal
         secondaryButtons.spacing = 8
 
@@ -268,6 +273,23 @@ final class StatusWindowController: NSWindowController, NSWindowDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
                 self?.show()
                 self?.refresh()
+            }
+        }
+    }
+
+    @objc private func testIdleTimeout() {
+        window?.orderOut(nil)
+        let textEdit = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.TextEdit").first
+        textEdit?.activate(options: [.activateIgnoringOtherApps])
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
+            StatusWindowController.postSelectAll()
+            // "ad" is a live candidate for `addr` that never completes. The idle timer must clear it
+            // without demanding events from anyone, and the app must still be here afterwards.
+            StatusWindowController.postKeystrokes("ad")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 9.5) { [weak self] in
+                self?.show()
+                self?.refresh()
+                launchLog("idle timeout test survived")
             }
         }
     }
