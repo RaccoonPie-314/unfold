@@ -23,11 +23,13 @@ import UnfoldEngine
 /// source, so the callback, Task 7's menu actions, `pause`/`resume`, the drains, and `restartTap`
 /// all serialize on the main run loop instead of racing. `restart()` mutates the re-enable budget
 /// and is reached only through `restartTap()`, which demands the same thread. What this does *not*
-/// solve: there is no lock anywhere in this file, so calling any of these methods from another
-/// thread is still a data race -- misuse the attach-time precondition catches at attach, not
-/// mid-session; and re-entrant delivery of a re-posted event runs `handle` on the main thread while
-/// the outer `handle` is still on the stack, which is safe only because the `repostMark` guard in
-/// `KeystrokeSource` answers it before any coordinator state is touched.
+/// solve: the tap is attached on the main thread, and `pause`, `handleIdle`, `handleFocusChange` (all
+/// three funnel through `drainRouter`, which asserts it) plus `attachTap`/`restartTap` refuse any other
+/// thread -- what is left unguarded is `handle` and `resume`, so calling *those* from another thread is
+/// still a data race the preconditions do not see; and re-entrant delivery of a re-posted event runs
+/// `handle` on the main thread while the outer `handle` is still on the stack, which is safe only
+/// because the `repostMark` guard in `KeystrokeSource` answers it before any coordinator state is
+/// touched.
 
 public final class ExpansionCoordinator {
     /// The tap's state as the menu should render it. `isActive` alone can read true on a tap that
@@ -171,15 +173,17 @@ public final class ExpansionCoordinator {
     /// `CGEvent.tapCreate`, `tapEnable` and `tapIsEnabled` stay confined to
     /// `KeystrokeSource.coreGraphicsTapBridge`. Starting a real tap is Task 7's gated decision --
     /// nothing in tests takes this path.
-    @discardableResult
+    ///
+    /// `@discardableResult` was dropped during Task 6's review (finding F): whether the tap came up is
+    /// the answer Task 7 has to render, and a call site that ignores it is the bug.
     public func attachTap() -> Bool {
         attachTap(bridge: KeystrokeSource.coreGraphicsTapBridge)
     }
 
     /// The seam Task 5's retry tests use, restated here for the wiring: a test injects a stand-in
     /// `TapBridge` whose ports are plain mach ports, so attach/detach/restart are exercised on this
-    /// type without ever reaching the tap API. Only tests pass a bridge.
-    @discardableResult
+    /// type without ever reaching the tap API. Only tests pass a bridge -- which is why this stays
+    /// `internal`: widening it would hand production a way to install a stand-in tap.
     internal func attachTap(bridge: KeystrokeSource.TapBridge) -> Bool {
         // Threading decision, enforced where it is made: the tap is hosted on the main run loop, so
         // the callback and every state mutation below serialize there instead of racing. Attaching
@@ -187,28 +191,52 @@ public final class ExpansionCoordinator {
         // pause/restart calls arrive on main -- the exact race Task 5's review refused to hand back.
         precondition(Thread.isMainThread,
                      "the tap must be attached on the main thread; see ExpansionCoordinator's threading decision")
-        if source == nil {
-            source = KeystrokeSource(handler: { [weak self] event, flags, original in
-                self?.handle(event, flags: flags, original: original) ?? .pass(original)
-            }, bridge: bridge)
+        if let source {
+            // A source this coordinator already published keeps its slot: its `start()` answers from
+            // the port it registered, and discarding it here would strand a live tap.
+            return source.start()
         }
-        return source?.start() ?? false
-    }
-
-    public func detachTap() {
-        source?.stop()
-        source = nil
+        // Finding F: publish only a source that observably started. A failed `start()` used to leave
+        // the dead object in the slot, and `tapState` then answered `.disabled` -- "off, and
+        // `start()`/`restartTap()` bring it back" -- for a tap that was never created at all. Local
+        // here, it is released on the failure path and the next attach tries again from clean.
+        let candidate = KeystrokeSource(handler: { [weak self] event, flags, original in
+            self?.handle(event, flags: flags, original: original) ?? .pass(original)
+        }, bridge: bridge)
+        guard candidate.start() else { return false }
+        source = candidate
+        return true
     }
 
     /// The documented way back from a latched re-enable budget -- `KeystrokeSource.restart()`, never
     /// `start()`, which cannot reach a latched tap whose port is still registered. Same thread as
     /// the attach, therefore same thread as the callback: the budget mutation and a mid-flight
     /// timeout-recovery cannot interleave (see the class doc for what this does not solve).
-    @discardableResult
     public func restartTap() -> Bool {
         precondition(Thread.isMainThread,
                      "restart must run on the thread that hosts the tap")
         return source?.restart() ?? false
+    }
+
+    /// Tear the tap down without losing a keystroke.
+    ///
+    /// Finding B (Task 6 review), and Plan 1 residual R4 in its plainest form: `source?.stop()` on its
+    /// own destroyed whatever the ledger still held. With no callback left, nothing could re-post it --
+    /// the reviewer's probe was a buffer of one, `detachTap()`, and the key never came back. The drain
+    /// runs first, while the tap is still up to deliver what it posts, and `pause()` is the drain that
+    /// already owns that contract: release, mark, pair with the synthesized keyup, post, hand back.
+    ///
+    /// Detach leaves the coordinator paused, which is how it was built: without a tap there is nothing
+    /// to feed, and `attachTap()` deliberately does not resume -- Task 7 decides when expansion is on.
+    public func detachTap() {
+        // R4 in its plainest form (finding B): stop last. `pause()` is the drain that already owns
+        // this contract -- release the ledger, mark each event, pair it with its synthesized keyup,
+        // post -- and it runs while the tap is still enabled, so the re-posts go through a live
+        // callback and out to the target app instead of into a source this method is about to drop.
+        // Reading `source?.stop()` as the whole of detach is what lost the reviewer's buffered key.
+        _ = pause()
+        source?.stop()
+        source = nil
     }
 
     // MARK: - Buffer plumbing
@@ -221,6 +249,16 @@ public final class ExpansionCoordinator {
     @discardableResult
     private func drainRouter(repostingBuffered: Bool = true,
                              forFocusChange: Bool = false) -> [CGEvent] {
+        // The precondition `attachTap` already enforces, extended to the drains: the tap callback, the
+        // menu's pause, the idle timer and the focus observer all mutate this same unguarded state, and
+        // they only serialize because they share the main run loop. A drain called from another thread is
+        // a data race on `heldEvents` and on the matcher, so it stops here rather than corrupting a
+        // keystroke mid-sentence. Every drain path funnels through this line -- `pause`
+        // (repostingBuffered true or false), `handleIdle`, `handleFocusChange`, and `detachTap`, which
+        // pauses first -- so the guard is written once and cannot drift out of step with one of them.
+        precondition(Thread.isMainThread,
+                     "a drain must run on the thread that hosts the tap: pause(), handleIdle() and "
+                     + "handleFocusChange() all reach this line, and none of them is guarded elsewhere")
         // Take against the ledger's own count before draining it: the events and the codes are
         // lockstep twins, and this is the one place that reads `router.bufferedCount`.
         let events = take(count: router.bufferedCount)
@@ -228,12 +266,30 @@ public final class ExpansionCoordinator {
         // Drains that are not happening inside the tap callback have no one else to post them, so
         // this does. The `.releaseThenPass` path out of `handle` does NOT post -- the tap owner does,
         // and doing both would type the released characters twice.
-        if repostingBuffered { events.forEach(repost) }
+        //
+        // Finding C: posting the raw events bypassed `KeystrokeSource.eventsToPost`, the one function
+        // that marks an event as re-posted and synthesizes its keyup. An unmarked keydown sails back
+        // through the tap's guard and can be swallowed again -- re-entrancy -- and a press with no
+        // release leaves the target app believing the key is still held. A drain outside the callback
+        // still has to answer to the tap, so it goes through the same path the callback uses.
+        if repostingBuffered { KeystrokeSource.eventsToPost(forRepost: events).forEach(repost) }
         return events
     }
 
+    /// Hands the FIFO's first `count` events to the caller.
+    ///
+    /// `heldEvents` and the router's ledger are the same number by construction, so asking for more
+    /// events than this holds is a bug in this file. Finding D: `min` and the `!heldEvents.isEmpty`
+    /// guard used to *absorb* that -- the difference between the two counts was dropped without a
+    /// trace, which is a lost keystroke wearing a doc comment that promises the opposite. It now
+    /// asserts. The clamp stays as the release-mode backstop, because a keyboard layer that crashes
+    /// the host app mid-sentence is worse than the divergence it reports.
     private func take(count: Int) -> [CGEvent] {
-        guard count > 0, !heldEvents.isEmpty else { return [] }
+        assert(count <= heldEvents.count,
+               "router released \(count) keystrokes but the coordinator holds \(heldEvents.count): "
+               + "the ledger and the event FIFO are lockstep twins, so a divergence is a bug here "
+               + "(see `heldEvents`) — the difference would otherwise be dropped, losing keystrokes")
+        guard count > 0 else { return [] }
         let take = min(count, heldEvents.count)
         let events = Array(heldEvents[0..<take])
         heldEvents.removeFirst(take)
