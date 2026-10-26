@@ -17,7 +17,7 @@ func launchLog(_ message: String) {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: StatusItemController?
-    private var statusWindow: StatusWindowController?
+    private var mainWindow: MainWindowController?
     private var permissionTimer: Timer?
     private var idleTimer: Timer?
     private var focusObserver: NSObjectProtocol?
@@ -28,10 +28,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // A missing file is a normal first run; a corrupt or unreadable one is not. The failure is
         // carried into the menu instead of being swallowed into an empty library, which used to read
         // "0 combos active" -- the same screen as a healthy install with nothing configured.
+        let store = Store(url: Store.defaultURL())
         let file: CombosFile
         let comboLoadFailure: String?
         do {
-            file = try Store(url: Store.defaultURL()).load()
+            file = try store.load()
             comboLoadFailure = nil
         } catch {
             file = CombosFile(formatVersion: CombosFile.currentFormatVersion, combos: [])
@@ -45,18 +46,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.statusItem = statusItem
         launchLog("statusItem created; combos=\(file.combos.count)")
 
-        // The window is the app's only visible surface, and the only thing that makes a failed
-        // first run diagnosable: it reports permission, tap state, and -- the decisive number --
-        // how many keystrokes the tap has actually received.
-        let statusWindow = StatusWindowController(coordinator: coordinator)
-        self.statusWindow = statusWindow
-        statusItem.onShowStatus = { [weak statusWindow] in statusWindow?.show() }
-        statusWindow.show()
+        // The window is the app's visible surface: the library, an editor, a field to try it in, and --
+        // behind a disclosure -- the counters that make a silent failure diagnosable.
+        let mainWindow = MainWindowController(coordinator: coordinator, store: store)
+        self.mainWindow = mainWindow
+        statusItem.onShowStatus = { [weak mainWindow] in mainWindow?.show() }
+        mainWindow.show()
 
-        // A long pause abandons a half-typed trigger. Eight seconds rather than 2.5: keystrokes render
-        // now, so a stale candidate is harmless until someone finishes it -- but forgetting too eagerly
-        // breaks a trigger typed slowly, which is the complaint that started this rework.
-        idleTimer = Timer.scheduledTimer(withTimeInterval: 8.0, repeats: true) { [weak coordinator] _ in
+        // A long pause abandons a half-typed trigger. The timer only *asks*; `handleIdle` drains after
+        // eight seconds of actual silence, and ticks faster than that so the answer is not delayed by a
+        // second whole grace period. Forgetting too eagerly breaks a trigger typed slowly, which is the
+        // complaint that started this rework.
+        idleTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak coordinator] _ in
             _ = coordinator?.handleIdle()
         }
 
@@ -87,6 +88,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
+// Before any window exists: the app's own text fields resolve ⌘V and ⌘A through this menu.
+AppMenu.install()
 launchLog("activationPolicy=\(app.activationPolicy().rawValue) (0=regular 1=accessory 2=prohibited)")
 let delegate = AppDelegate()
 app.delegate = delegate

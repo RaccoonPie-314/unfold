@@ -16,6 +16,22 @@ private func router(_ combos: [Combo]) -> EventRouter {
 /// candidate and whether a combo completed; the adapter renders every keystroke either way. These
 /// tests pin that contract -- the earlier `swallowAndRecord` / `releaseThenPass` model is gone.
 final class EventRouterTests: XCTestCase {
+    /// The scenario a hand-correction creates: the user deletes what they typed and starts the word
+    /// again. Without the reset the matcher still believes the last thing on screen was a letter, so the
+    /// retyped word is treated as the middle of one and never matches.
+    func testAnEditClearsTheCandidateAndReopensTheBoundary() {
+        var subject = router([combo("addr", "123 Main St")])
+        _ = subject.route(.keyDown("a", 0), flags: [])
+        _ = subject.route(.keyDown("d", 2), flags: [])
+        _ = subject.route(.keyDown("r", 15), flags: [])
+        XCTAssertTrue(subject.hasLivePrefix == false, "'adr' stopped matching on its own")
+
+        XCTAssertEqual(subject.route(.edit(51), flags: []), .passThrough)
+        XCTAssertFalse(subject.hasLivePrefix)
+        XCTAssertEqual(subject.route(.keyDown("a", 0), flags: []), .buffered,
+                       "the next keystroke starts a fresh word")
+    }
+
     func testAnUnrelatedKeyPassesThroughWithoutACandidate() {
         var subject = router([combo("addr", "123 Main St")])
         XCTAssertEqual(subject.route(.keyDown("z", 44), flags: []), .passThrough)

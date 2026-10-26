@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Foundation
 import UnfoldEngine
@@ -58,9 +59,9 @@ public final class ExpansionCoordinator {
         }
     }
 
-    public let combos: [Combo]
-    public let active: [Combo]
-    public let inactivePlaceholderCount: Int
+    public private(set) var combos: [Combo]
+    public private(set) var active: [Combo]
+    public private(set) var inactivePlaceholderCount: Int
 
     private var router: EventRouter
     private let injector: TextInjecting
@@ -84,24 +85,59 @@ public final class ExpansionCoordinator {
     private var source: KeystrokeSource?
     public private(set) var isPaused = true
 
+    /// Set when a deletion makes the keystroke record of the current word untrue -- see `resyncIfStale`.
+    private var needsResync = false
+
+    /// The adapter's own model of the text at the caret: characters this app watched render, minus the
+    /// backspaces it watched happen. Bounded to the tail, because only the trailing word matters.
+    private var renderedText = ""
+    private static let modelLimit = 120
+
+    /// Backspace and forward delete. These are the keys that make a typed word disagree with the
+    /// keystroke stream, so they are the ones worth re-reading the document for; a caret move does not
+    /// change any text and is left to `forget`.
+    static let deletionKeyCodes: Set<Int> = [51, 117]
+
     public init(combos: [Combo], injector: TextInjecting = Injector(),
                 repost: @escaping (CGEvent) -> Void = { $0.post(tap: .cgSessionEventTap) },
                 isTrusted: @escaping () -> Bool = { false },
                 perform: @escaping (@escaping () -> Void) -> Void = { DispatchQueue.main.async(execute: $0) }) {
-        let live = combos.filter(\.enabled)
-        // Only text-only combos are registered: a placeholder combo needs a prompt the keyboard
-        // layer cannot show, so it counts as inactive instead of expanding into half a template.
-        let promptable = live.filter { combo in
-            combo.parts.allSatisfy { if case .text = $0 { return true }; return false }
-        }
+        let library = Self.library(for: combos)
         self.combos = combos
-        self.active = promptable
-        self.inactivePlaceholderCount = live.count - promptable.count
+        self.active = library.expandable
+        self.inactivePlaceholderCount = library.awaitingPrompt
         self.injector = injector
         self.repost = repost
         self.isTrusted = isTrusted
         self.perform = perform
-        self.router = EventRouter(matcher: Matcher(index: TriggerIndex(combos: promptable)))
+        self.router = EventRouter(matcher: Matcher(index: TriggerIndex(combos: library.expandable)))
+    }
+
+    /// What of a library the keyboard layer can actually expand.
+    ///
+    /// Only text-only combos are registered: a placeholder combo needs a prompt the keyboard layer
+    /// cannot show, so it counts as inactive instead of expanding into half a template.
+    private static func library(for combos: [Combo]) -> (expandable: [Combo], awaitingPrompt: Int) {
+        let live = combos.filter(\.enabled)
+        let promptable = live.filter { combo in
+            combo.parts.allSatisfy { if case .text = $0 { return true }; return false }
+        }
+        return (promptable, live.count - promptable.count)
+    }
+
+    /// Adopt an edited library without tearing the tap down.
+    ///
+    /// An editor that saves a combo must not ask the user to relaunch the app, and restarting the tap
+    /// would drop whatever is half-typed at that moment. The candidate goes (it was matched against the
+    /// old triggers); the boundary and the tap stay.
+    public func reload(combos newCombos: [Combo]) {
+        precondition(Thread.isMainThread,
+                     "reload must run on the thread that hosts the tap: the matcher is read from the callback")
+        let library = Self.library(for: newCombos)
+        combos = newCombos
+        active = library.expandable
+        inactivePlaceholderCount = library.awaitingPrompt
+        router.reload(index: TriggerIndex(combos: library.expandable))
     }
 
     public var activeCount: Int { active.count }
@@ -111,6 +147,9 @@ public final class ExpansionCoordinator {
     /// "no expansion" looks identical whether permission is missing, the tap is dead, or the tap is
     /// fine and nothing matched. These three counts separate those cases.
     public private(set) var keystrokesSeen = 0
+    /// Presses only -- the count the rewrite compares itself against, because a press is what puts a
+    /// character in the document.
+    public private(set) var keyDownsSeen = 0
     public private(set) var lastEventAt: Date?
     public private(set) var lastRouting: String?
     public private(set) var lastExpansion: String?
@@ -130,6 +169,13 @@ public final class ExpansionCoordinator {
     /// reading never creates one.
     public var isTapEnabled: Bool { source?.isTapEnabled ?? false }
 
+    /// How many times macOS has switched the tap off since launch.
+    ///
+    /// Keystrokes that arrive while the tap is off never reach the matcher, so an expansion that "just
+    /// did not fire" and a counter that will not move are the same event seen from two sides. Zero is
+    /// the only number that means the tap was listening the whole time.
+    public var tapDisableObservations: Int { source?.disableObservations ?? 0 }
+
     /// The tap's decision function. Everything here runs on the thread that attached the tap,
     /// re-entrantly at most once per re-posted event (see the class doc and `KeystrokeSource.repostMark`).
     public func handle(_ event: RoutedEvent, flags: CGEventFlags, original: CGEvent) -> TapOutcome {
@@ -142,17 +188,21 @@ public final class ExpansionCoordinator {
         return outcome
     }
 
-    /// One line per event, so a failed first run can be diagnosed from a file instead of a guessing
-    /// game. Bounded by truncation rather than rotation: this is bring-up instrumentation.
+    /// One line per keystroke that could matter, with the time it happened, so a report of "it didn't
+    /// fire" can be answered from the file instead of by guessing at the sequence. Keyups are counted
+    /// but not written: they are half the volume and have never once explained a failure.
     private func trace(_ event: RoutedEvent, _ flags: CGEventFlags, _ outcome: TapOutcome) {
         let summary: String
         switch event {
         case .keyDown(let character, let code):
             summary = "down '\(character)' u+\(character.unicodeScalars.first.map { String($0.value, radix: 16) } ?? "?") code=\(code)"
         case .keyUp(let code):
-            summary = "up code=\(code)"
+            lastRouting = "up code=\(code) candidate=\(router.typedCount)"
+            return
         case .other:
             summary = "other"
+        case .edit(let code):
+            summary = "edit code=\(code)"
         }
         let decision: String
         switch outcome {
@@ -161,7 +211,23 @@ public final class ExpansionCoordinator {
         case .repost(let events, thenPass: _): decision = "repost(\(events.count))"
         }
         lastRouting = "\(summary) → \(decision) candidate=\(router.typedCount)"
-        appendTrace("\(lastRouting) flags=\(flags.rawValue)\n")
+        appendTrace("\(stamp()) \(lastRouting) flags=\(flags.rawValue)\n")
+    }
+
+    /// The line that answers "why did nothing happen": a candidate that was alive and is now gone, and
+    /// the character that killed it.
+    private func noteCandidateDeath(_ candidate: String, killedBy event: RoutedEvent) {
+        let killer: String
+        switch event {
+        case .keyDown(let character, _): killer = "'\(character)'"
+        case .edit(let code): killer = "edit \(code)"
+        default: killer = "other"
+        }
+        appendTrace("\(stamp()) candidate «\(candidate)» died at \(killer)\n")
+    }
+
+    private func stamp() -> String {
+        Date().formatted(date: .omitted, time: .standard)
     }
 
     private func appendTrace(_ line: String) {
@@ -182,12 +248,20 @@ public final class ExpansionCoordinator {
     private func decide(_ event: RoutedEvent, flags: CGEventFlags, original: CGEvent) -> TapOutcome {
         guard !isPaused else { return .pass(original) }
 
+        // Before anything is measured: a correction can put the candidate back in the document, and the
+        // keystroke about to be fed has to be interpreted against what is on screen now.
+        resyncIfStale(flags: flags)
+
         // Measured before routing: on an expansion the router clears the buffer, and this is how many
         // characters are already sitting on screen waiting to be replaced.
         let renderedCount = router.typedCount
+        let candidateBefore = router.candidateText
 
         switch router.route(event, flags: flags) {
         case .passThrough, .buffered:
+            if renderedCount > 0, router.typedCount == 0 {
+                noteCandidateDeath(candidateBefore, killedBy: event)
+            }
             // Only a keystroke that actually produced text counts as rendered. A shortcut does not:
             // ⌘A arrives as `.keyDown("a")` with Command held, and recording that as the last
             // character made the boundary think a word was in progress -- so select-all (or undo,
@@ -195,6 +269,19 @@ public final class ExpansionCoordinator {
             if case .keyDown(let character, _) = event,
                ModifierGate.mayConsiderExpansion(flags) {
                 router.noteRendered(character)
+                appendToModel(character)
+            } else if case .keyDown = event {
+                // A shortcut we did not render -- ⌘A, ⌘V, ⌘X, ⌘Z, an Option-composed character. Any of
+                // them can replace or move text without telling us what it did, and a model that keeps
+                // guessing afterwards answers with words that are not on screen. Dropping it is how the
+                // next correction falls back to the keystrokes instead of trusting a fiction. It was
+                // ⌘A followed by delete -- the ordinary way to clear a field -- that made every attempt
+                // after the first one fail.
+                renderedText = ""
+                needsResync = false
+            }
+            if case .edit(let code) = event {
+                noteEdit(code, flags: flags)
             }
             return .pass(original)
 
@@ -214,6 +301,39 @@ public final class ExpansionCoordinator {
         }
     }
 
+    private func appendToModel(_ character: Character) {
+        renderedText.append(character)
+        if renderedText.count > Self.modelLimit {
+            renderedText = String(renderedText.suffix(Self.modelLimit))
+        }
+    }
+
+    /// Keeps the model of the screen in step with a deletion.
+    ///
+    /// The modifiers decide how much text actually goes away, and getting this wrong is worse than
+    /// knowing nothing: `⌥⌫` deletes a whole word and `⌘⌫` the whole line, so a model that dropped one
+    /// character for each of those would drift behind the screen -- and every trigger typed afterwards
+    /// would look glued to the end of the word the model still believes is there, refusing to expand
+    /// until the field was cleared.
+    private func noteEdit(_ code: Int, flags: CGEventFlags) {
+        guard Self.deletionKeyCodes.contains(code) else {
+            // A caret move means the model no longer knows where the caret is at all.
+            renderedText = ""
+            needsResync = false
+            return
+        }
+        if flags.contains(.maskCommand) {
+            renderedText = ""
+        } else if flags.contains(.maskAlternate) {
+            renderedText = String(renderedText.reversed()
+                .drop(while: { isWordCharacter($0) })
+                .reversed())
+        } else if !renderedText.isEmpty {
+            renderedText.removeLast()
+        }
+        needsResync = true
+    }
+
     private func delimiter(in event: RoutedEvent) -> Character? {
         if case .keyDown(let character, _) = event { return character }
         return nil
@@ -228,14 +348,57 @@ public final class ExpansionCoordinator {
         let text = composedText(for: combo)
         lastExpansion = text
         lastExpansionAt = Date()
+        // The model has to follow what the rewrite puts on screen, or the next correction is computed
+        // from text that is no longer there.
+        renderedText = String((text + (delimiter.map(String.init) ?? "")).suffix(Self.modelLimit))
+        let delimiterName = delimiter.map { "'\($0)'" } ?? "nil"
+        Injector.injectTrace("expand trigger=\(combo.trigger) delete=\(count) delimiter=\(delimiterName) "
+                             + "in [\(Injector.frontmostName())]")
+
+        // The one measurement that distinguishes the two ways an expansion can leave characters behind:
+        // how long the deferred block waited, and how much typing landed in the document while it
+        // waited. A backspace deletes *from the caret*, so anything typed ahead of the rewrite is
+        // deleted instead of the trigger it was meant to replace.
+        let scheduledAt = Date()
+        let keyDownsAtDelimiter = keyDownsSeen
 
         perform { [injector] in
-            injector.deleteBackward(count)
-            injector.insert(text, mode: combo.insertion)
+            let lag = Int(Date().timeIntervalSince(scheduledAt) * 1000)
+            Injector.injectTrace("rewrite lag=\(lag)ms "
+                                 + "typedAhead=\(self.keyDownsSeen - keyDownsAtDelimiter) "
+                                 + "candidate=\(self.router.typedCount)")
+            // The delimiter lands either way: the tap swallowed the press, so a rewrite that stands down
+            // still owes the user that keystroke (R4).
+            if injector.eraseTrigger(combo.trigger, typedCount: count) {
+                injector.insert(text, mode: combo.insertion)
+            }
             if let delimiter {
                 injector.typeLiteral(String(delimiter))
             }
         }
+    }
+
+    /// Rebuild the candidate from what we believe is on screen after a deletion.
+    ///
+    /// The document itself cannot be asked. Every attempt to read it from here loses the race against
+    /// the target app's own event queue: scheduled from the backspace it answers one deletion behind,
+    /// and on the following keyup it answers one deletion behind still. Seen live in the trace -- three
+    /// reads of `adddr`, `addd`, `add` for three backspaces on `adddr` -- which seeds a candidate the
+    /// very next letter invalidates.
+    ///
+    /// So the adapter keeps its own model instead: every rendered character is appended, every
+    /// backspace removes one, and the word at the end of that model becomes the candidate. Nothing
+    /// crosses a process boundary, so there is nothing to race. The rewrite still verifies against the
+    /// real document before it deletes anything, so a model that has drifted cannot eat the user's text
+    /// -- it can only miss an expansion.
+    private func resyncIfStale(flags: CGEventFlags) {
+        guard needsResync else { return }
+        needsResync = false
+        guard ModifierGate.mayConsiderExpansion(flags) else { return }
+        let word = DocumentWord.trailingWord(renderedText)
+        router.resync(word: word)
+        Injector.injectTrace("resync model='\(renderedText)' word='\(word)' "
+                             + "candidate=\(router.typedCount)")
     }
 
     /// Stop matching, and release what was being held.
@@ -254,8 +417,20 @@ public final class ExpansionCoordinator {
         isPaused = false
     }
 
+    /// How long the keyboard must be silent before a half-typed candidate is abandoned.
+    public static let idleGrace: TimeInterval = 8
+
+    /// Abandon a candidate the person has walked away from.
+    ///
+    /// Gated on silence, not on the timer's period. A drain that fires every eight seconds whatever the
+    /// keys are doing can land *inside* a trigger and clear a candidate that was one character from
+    /// completing -- which is the same "sometimes it just does not fire" the user reports, manufactured
+    /// by the app itself.
     @discardableResult
-    public func handleIdle() -> [CGEvent] { drainRouter() }
+    public func handleIdle(now: Date = Date()) -> [CGEvent] {
+        guard let last = lastEventAt, now.timeIntervalSince(last) >= Self.idleGrace else { return [] }
+        return drainRouter()
+    }
 
     /// Plan 1 residual R3: a focus change must release the buffer, never discard it, and R4 keeps
     /// the released events visible to the caller even after the drain has posted them. The release
@@ -375,6 +550,8 @@ public final class ExpansionCoordinator {
                      "a drain must run on the thread that hosts the tap: pause(), handleIdle() and "
                      + "handleFocusChange() all reach this line, and none of them is guarded elsewhere")
         router.forget()
+        renderedText = ""
+        needsResync = false
         return []
     }
 }

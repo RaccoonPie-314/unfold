@@ -5,6 +5,10 @@ import UnfoldEngine
 public enum RoutedEvent: Equatable {
     case keyDown(Character, Int)
     case keyUp(Int)
+    /// A key that edits the document or moves the caret without typing into it: backspace, forward
+    /// delete, arrows, home/end, page up/down. Carries the key code, because a deletion and a caret move
+    /// need different answers.
+    case edit(Int)
     case other
 }
 
@@ -33,6 +37,9 @@ public struct EventRouter {
 
     public var hasLivePrefix: Bool { !matcher.buffer.isEmpty }
 
+    /// The characters the candidate holds right now. Diagnostics only.
+    public var candidateText: String { matcher.buffer }
+
     /// Records that a character reached the document, so the boundary reflects the user's screen.
     public mutating func noteRendered(_ character: Character) {
         matcher.noteRendered(character)
@@ -40,6 +47,15 @@ public struct EventRouter {
 
     public mutating func route(_ event: RoutedEvent, flags: CGEventFlags) -> RoutingDecision {
         switch event {
+        case .edit(_):
+            // A deletion or a caret move changes the document in a way the matcher cannot follow one
+            // character at a time, and both facts matter: the half-typed candidate is now stale, and the
+            // character the matcher believes is in front of the caret is no longer there. Leaving the
+            // boundary closed after a hand-correction is what made a retyped trigger refuse to expand
+            // until the user cleared the field and started over.
+            matcher.forget()
+            return .passThrough
+
         case .other, .keyUp:
             // Keyups matter to nobody now that nothing is held: the old ledger swallowed them to pair
             // with swallowed keydowns, and there are no swallowed keydowns left.
@@ -54,6 +70,17 @@ public struct EventRouter {
     /// pause, so the next word typed must be able to start clean.
     public mutating func forget() {
         matcher.forget()
+    }
+
+    /// Replaces the trigger set. The half-typed candidate goes with the old index; the boundary stays,
+    /// because the document did not change.
+    public mutating func reload(index: TriggerIndex) {
+        matcher.reload(index: index)
+    }
+
+    /// Rebuilds the candidate from the word the document says is in front of the caret.
+    public mutating func resync(word: String) {
+        matcher.resync(word: word)
     }
 
     private mutating func routeKeyDown(character: Character, code: Int,

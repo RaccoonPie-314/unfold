@@ -146,18 +146,28 @@ public final class KeystrokeSource {
 
     // MARK: - Routing
 
+    /// Key codes that fix a mistake rather than type a character: backspace, forward delete, home/end,
+    /// page up/down and the arrows. Each one removes text the matcher counted or moves the caret away
+    /// from it, so both the candidate and the boundary it was resting on are stale afterwards.
+    static let editingKeyCodes: Set<Int> = [51, 117, 115, 119, 116, 121, 123, 124, 125, 126]
+
     static func route(into event: CGEvent, type: CGEventType) -> RoutedEvent {
         switch type {
         case .keyDown:
-            // Auto-repeat carries flag bit 0x400, which has no named member in CGEventFlags. A
-            // repeated keydown is not a new keystroke: a trigger is a sequence of distinct presses,
-            // and one burst produces a single keyup for many keydowns, which is exactly the shape
-            // the ledger cannot reconcile. Treat repeats as uninterpretable so the buffer releases.
-            if event.flags.contains(CGEventFlags(rawValue: 0x400)) { return .other }
+            // An auto-repeat keydown carries flag bit 0x400, which has no named member in CGEventFlags.
+            // It is fed to the matcher like any other press, because that is what it is to the target
+            // app: another character inserted. A trigger with a doubled letter -- `addr`, `add` -- is
+            // routinely typed as one press held past the repeat threshold, and a repeat that was ignored
+            // left the candidate a character behind the document, so the word never completed and the
+            // expansion silently did not happen. Holding a key does not build a trigger out of nothing
+            // either: the run of repeats stops matching on its second character and releases.
             guard let character = KeyboardDecoder.character(from: event) else { return .other }
+            let code = KeyboardDecoder.keyCode(from: event)
             // Decoding succeeded is not the same as being text; see `refuses`.
-            if Self.refuses(character) { return .other }
-            return .keyDown(character, KeyboardDecoder.keyCode(from: event))
+            if Self.refuses(character) {
+                return Self.editingKeyCodes.contains(code) ? .edit(code) : .other
+            }
+            return .keyDown(character, code)
         case .keyUp:
             return .keyUp(KeyboardDecoder.keyCode(from: event))
         default:
@@ -385,6 +395,14 @@ public final class KeystrokeSource {
         return bridge.isEnabled(tap)
     }
 
+    /// How many times macOS has switched this tap off and this type has tried to switch it back on.
+    ///
+    /// The one number that answers "did it go blind while typing?". A callback that cannot keep
+    /// up -- a slow Accessibility read, a clipboard that has to be pulled out of another process -- loses
+    /// the keystrokes that arrive while the tap is off, and those keystrokes never reach the matcher at
+    /// all. That is an invisible failure unless it is counted.
+    private(set) var disableObservations = 0
+
     /// Read alongside `isActive` by whoever renders the state: `isActive == false` with
     /// `hasGivenUp == false` means "off, and the next timeout will be ridden out", while
     /// `hasGivenUp == true` means "off, and only `restart()` brings it back".
@@ -546,6 +564,7 @@ public final class KeystrokeSource {
     /// is reached from the callback and nowhere else, and a test that calls it must inject a stand-in
     /// `TapBridge` so the `enable` it performs never reaches `CGEvent.tapEnable`.
     func enableAgain() {
+        disableObservations += 1
         guard let tap else { return }
         // `enable` is read out before the mutation so the closure captures the seam and the port, not
         // `self`: `recover` mutates one of self's properties, and a closure that captured self here

@@ -82,10 +82,12 @@ final class KeystrokeSourceTests: XCTestCase {
         // U+F700...U+F7FF. Every one of them is a single non-word `Character`, so before this rule they
         // acted as delimiters and FIRED an expansion: pressing Backspace or Escape mid-typing rewrote
         // the user's text. DEL (U+007F) is listed explicitly because it is not a C0 control and it is
-        // the most destructive of the set. All must be .other, which makes the router release the
-        // buffered prefix and pass the key through untouched.
+        // the most destructive of the set. None of them may reach the matcher as a keystroke. The sweep
+        // deliberately uses a key code that is not an editing key, so it still pins the `.other` answer;
+        // the keys that *are* edits answer `.edit` and are pinned in their own test below.
         for scalar: UInt32 in [0xF703, 0x001B, 0x007F, 0x0008] {
-            XCTAssertEqual(KeystrokeSource.route(into: keyDown(carrying: scalar), type: .keyDown), .other,
+            XCTAssertEqual(KeystrokeSource.route(into: keyDown(carrying: scalar, keycode: 122),
+                                                 type: .keyDown), .other,
                            "\(name(scalar)) must never be offered to the matcher as a keystroke")
         }
     }
@@ -105,21 +107,49 @@ final class KeystrokeSourceTests: XCTestCase {
         }
     }
 
+    /// A real keypress of Backspace carries no unicode payload of its own -- the payload-carrying events
+    /// above are the SDK's per-keycode stand-ins, constructed by hand. This is the shape that arrives
+    /// from a keyboard, and the edit answer must not depend on a payload being there.
+    func testAPayloadlessBackspaceIsStillRoutedAsAnEdit() {
+        let bare = CGEvent(keyboardEventSource: nil, virtualKey: 51, keyDown: true)!
+        XCTAssertEqual(KeystrokeSource.route(into: bare, type: .keyDown), .edit(51))
+
+        let bareArrow = CGEvent(keyboardEventSource: nil, virtualKey: 123, keyDown: true)!
+        XCTAssertEqual(KeystrokeSource.route(into: bareArrow, type: .keyDown), .edit(123))
+    }
+
+    func testEditingKeysAreRoutedAsEditsNotAsText() {
+        // Backspace, forward delete and the arrows each change what is in front of the caret without
+        // typing a character. They must be distinguishable from the inert keys (escape, function keys)
+        // that leave the document alone.
+        XCTAssertEqual(KeystrokeSource.route(into: keyDown(carrying: 0x0008, keycode: 51), type: .keyDown), .edit(51))
+        XCTAssertEqual(KeystrokeSource.route(into: keyDown(carrying: 0x007F, keycode: 117), type: .keyDown), .edit(117))
+        XCTAssertEqual(KeystrokeSource.route(into: keyDown(carrying: 0x001C, keycode: 123), type: .keyDown), .edit(123))
+        XCTAssertEqual(KeystrokeSource.route(into: keyDown(carrying: 0x001C, keycode: 126), type: .keyDown), .edit(126))
+        XCTAssertEqual(KeystrokeSource.route(into: keyDown(carrying: 0x001B, keycode: 53), type: .keyDown), .other,
+                       "escape changes nothing in the document, so it is not an edit")
+        XCTAssertEqual(KeystrokeSource.route(into: keyDown(carrying: 0x0010, keycode: 122), type: .keyDown), .other)
+    }
+
     func testFlagsChangedAndUnrelatedTypesMapToOther() {
         let event = CGEvent(keyboardEventSource: nil, virtualKey: 56, keyDown: true)!
         XCTAssertEqual(KeystrokeSource.route(into: event, type: .flagsChanged), .other)
         XCTAssertEqual(KeystrokeSource.route(into: event, type: .leftMouseDown), .other)
     }
 
-    func testAnAutoRepeatedKeydownIsNotANewKeystroke() {
-        // Flag 0x400 marks a repeat. One burst produces many keydowns and a single keyup, which the
-        // ledger cannot reconcile, and holding a key should never build or fire a trigger.
+    func testAnAutoRepeatedKeydownIsAnotherCharacterInTheDocument() {
+        // Flag 0x400 marks a repeat. It is not a second press and it is not a cancelled one: the target
+        // app inserts another copy of the character for every repeat it receives. Under the render model
+        // the matcher must count it, or a doubled letter typed as a hold -- the `dd` in `addr` and `add` --
+        // leaves the candidate behind the document and the trigger never fires. The previous `→ .other`
+        // answer belonged to the hold-and-release ledger, which could not reconcile many keydowns with
+        // one keyup; that ledger is gone and the reason with it.
         let repeated = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true)!
         let payload = Array("a".utf16)
         repeated.keyboardSetUnicodeString(stringLength: payload.count, unicodeString: payload)
         repeated.flags.insert(CGEventFlags(rawValue: 0x400))
 
-        XCTAssertEqual(KeystrokeSource.route(into: repeated, type: .keyDown), .other)
+        XCTAssertEqual(KeystrokeSource.route(into: repeated, type: .keyDown), .keyDown("a", 0))
     }
 
     func testReleaseEventMatchesTheSwallowedKeycode() {

@@ -2,6 +2,38 @@ import XCTest
 @testable import UnfoldEngine
 
 final class MatcherTests: XCTestCase {
+    /// A hand correction: the user typed `adrr`, deleted two characters, and is about to type `dr `.
+    /// No keystroke sequence spelled `addr` in order, so the candidate has to come from the document.
+    func testResyncSeedsACandidateTheKeystrokesNeverSpelled() {
+        let addr = makeCombo("addr", replacement: "123 Main St")
+        var matcher = Matcher(index: TriggerIndex(combos: [addr]))
+        _ = matcher.feed("a"); _ = matcher.feed("d"); _ = matcher.feed("r"); _ = matcher.feed("r")
+        _ = matcher.forget()
+
+        matcher.resync(word: "ad")
+        XCTAssertEqual(matcher.buffer, "ad")
+        XCTAssertEqual(matcher.feed("d"), [.swallow])
+        XCTAssertEqual(matcher.feed("r"), [.swallow])
+        XCTAssertEqual(matcher.feed(" "), [.expand(addr), .emit(" ")])
+    }
+
+    func testResyncRefusesAWordThatCannotBecomeATrigger() {
+        var matcher = Matcher(index: TriggerIndex(combos: [makeCombo("addr")]))
+        matcher.resync(word: "paddin")
+        XCTAssertEqual(matcher.buffer, "")
+        matcher.resync(word: "")
+        XCTAssertEqual(matcher.buffer, "")
+    }
+
+    func testResyncOfACompletedTriggerFiresOnTheNextDelimiter() {
+        // The user deleted only the space. The word in front of the caret is the whole trigger.
+        let addr = makeCombo("addr", replacement: "123 Main St")
+        var matcher = Matcher(index: TriggerIndex(combos: [addr]))
+        matcher.resync(word: "addr")
+
+        XCTAssertEqual(matcher.feed(" "), [.expand(addr), .emit(" ")])
+    }
+
     func testTriggerThenDelimiterExpandsAndPassesTheDelimiterThrough() {
         let add = makeCombo("add", replacement: "address")
         var matcher = Matcher(index: TriggerIndex(combos: [add]))

@@ -4,10 +4,14 @@ import UnfoldEngine
 
 public protocol TextInjecting {
     func insert(_ text: String, mode: InsertionMode)
-    /// Deletes the characters already on screen -- the trigger the user just typed -- before the
-    /// replacement goes in. Posted as real backspaces so every app sees it, including the ones that
-    /// ignore synthetic paste.
-    func deleteBackward(_ count: Int)
+    /// Remove the characters the user just typed for this trigger, which sit immediately before the
+    /// caret, so the replacement lands on them.
+    ///
+    /// Returns false when the field reported its own contents and they are **not** this trigger: then
+    /// nothing was deleted and the caller must not insert either. Deleting anyway would erase text the
+    /// user never typed, which is worse than an expansion that did not fire.
+    @discardableResult
+    func eraseTrigger(_ trigger: String, typedCount: Int) -> Bool
     /// Types text as key events rather than through the pasteboard. Used for the delimiter the user
     /// pressed, which must still land after an expansion.
     func typeLiteral(_ text: String)
@@ -76,14 +80,19 @@ public final class Injector: TextInjecting {
     private var pendingRestore: (generation: Int, restore: () -> Void)?
     private var lastRestoreGeneration = 0
 
+    /// The document side of the rewrite. A test hands over an eraser reading a scripted field, so all
+    /// three answers -- selected, absent, silent -- are reachable without a frontmost app.
+    private let eraser: DocumentTriggerEraser
+
     public convenience init() {
-        self.init(clipboard: SystemClipboard())
+        self.init(clipboard: SystemClipboard(), eraser: DocumentTriggerEraser())
     }
 
     /// The injection point. Production never reaches it: the no-argument initializer above hands over
     /// the real system clipboard, and this is how a test hands over a fake instead.
-    init(clipboard: ClipboardServing) {
+    init(clipboard: ClipboardServing, eraser: DocumentTriggerEraser = DocumentTriggerEraser()) {
         self.clipboard = clipboard
+        self.eraser = eraser
     }
 
     public func insert(_ text: String, mode: InsertionMode) {
@@ -91,6 +100,13 @@ public final class Injector: TextInjecting {
         case .paste: paste(text)
         case .keys: type(text)
         }
+    }
+
+    /// The app whose field is about to be rewritten. Some of these failures turn out to be one app
+    /// refusing to answer Accessibility while every other app behaves, and a log line cannot say so
+    /// without naming the app.
+    static func frontmostName() -> String {
+        NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
     }
 
     /// Bring-up instrumentation: what the injector captured and whether the restore actually ran.
@@ -195,7 +211,33 @@ public final class Injector: TextInjecting {
         if let up { clipboard.post(up) }
     }
 
-    public func deleteBackward(_ count: Int) {
+    /// Ask the document first, fall back to the tally.
+    ///
+    /// When the field answers, its answer wins: the trigger is selected through Accessibility and the
+    /// replacement paste lands on that selection, so nothing depends on how many backspaces the target
+    /// app chose to honour. When it will not answer at all, posting `typedCount` backspaces is the only
+    /// thing left, and it is what this code did before the document was asked.
+    public func eraseTrigger(_ trigger: String, typedCount: Int) -> Bool {
+        switch eraser.erase(trigger: trigger) {
+        case .selected:
+            Injector.injectTrace("erase \(quote(trigger)): selected in the document [\(Injector.frontmostName())]")
+            return true
+        case .absent:
+            Injector.injectTrace("erase \(quote(trigger)): not in the document — standing down [\(Injector.frontmostName())]")
+            return false
+        case .unknown:
+            Injector.injectTrace("erase \(quote(trigger)): FIELD SILENT, \(typedCount) backspaces [\(Injector.frontmostName())]")
+            deleteBackward(typedCount)
+            return true
+        }
+    }
+
+    private func quote(_ text: String) -> String { "«\(text)»" }
+
+    /// Deletes the characters already on screen -- the trigger the user just typed -- before the
+    /// replacement goes in. Posted as real backspaces so every app sees it, including the ones that
+    /// ignore synthetic paste.
+    func deleteBackward(_ count: Int) {
         guard count > 0 else { return }
         let source = CGEventSource(stateID: .combinedSessionState)
         for _ in 0..<count {

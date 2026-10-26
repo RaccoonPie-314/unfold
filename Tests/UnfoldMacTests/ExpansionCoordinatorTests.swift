@@ -5,11 +5,21 @@ import XCTest
 
 private final class FakeInjector: TextInjecting {
     var insertions: [(String, InsertionMode)] = []
+    /// The tally the rewrite was given, in characters. The document's own answer is a separate seam --
+    /// see `DocumentTriggerEraserTests`.
     var deletions: [Int] = []
+    var erasedTriggers: [String] = []
     var literals: [String] = []
+    /// False models a field that reports its own contents and says the trigger is not in front of the
+    /// caret: the rewrite must then stand down instead of deleting what it finds there.
+    var erases = true
 
     func insert(_ text: String, mode: InsertionMode) { insertions.append((text, mode)) }
-    func deleteBackward(_ count: Int) { deletions.append(count) }
+    func eraseTrigger(_ trigger: String, typedCount: Int) -> Bool {
+        erasedTriggers.append(trigger)
+        deletions.append(typedCount)
+        return erases
+    }
     func typeLiteral(_ text: String) { literals.append(text) }
 }
 
@@ -107,6 +117,161 @@ final class ExpansionCoordinatorTests: XCTestCase {
         XCTAssertEqual(injector.insertions.count, 1)
         XCTAssertEqual(injector.insertions.first?.0, "123 Main St")
         XCTAssertEqual(injector.literals, [" "], "the space the user pressed still lands, after the text")
+    }
+
+    func testAFieldThatNoLongerHoldsTheTriggerStillLandsTheDelimiter() {
+        let (coordinator, injector, _) = subject([combo("addr", parts: [textPart("123 Main St")])])
+        injector.erases = false
+        for character in "addr" {
+            _ = coordinator.handle(.keyDown(character, 0), flags: [], original: keyEvent(0, down: true))
+        }
+
+        let outcome = coordinator.handle(.keyDown(" ", 49), flags: [], original: keyEvent(49, down: true))
+
+        XCTAssertFalse(isPass(outcome))
+        XCTAssertEqual(injector.erasedTriggers, ["addr"], "the document is asked about the trigger, not a count")
+        XCTAssertTrue(injector.insertions.isEmpty, "nothing is pasted over text that is not ours")
+        XCTAssertEqual(injector.literals, [" "], "the swallowed keystroke is still owed to the user")
+    }
+
+    /// The other half of the complaint: delete the whole word and type it again. The model empties as
+    /// the characters go, so the retyped word starts clean.
+    func testATriggerRetypedAfterBeingFullyDeletedStillExpands() {
+        let (coordinator, injector, _) = subject([combo("addr", parts: [textPart("123 Main St")])])
+        for (character, code) in [(Character("a"), 0), (Character("d"), 2), (Character("d"), 2),
+                                  (Character("r"), 15)] {
+            _ = coordinator.handle(.keyDown(character, code), flags: [], original: keyEvent(code, down: true))
+        }
+        for _ in 0..<4 {
+            _ = coordinator.handle(.edit(51), flags: [], original: keyEvent(51, down: true))
+            _ = coordinator.handle(.keyUp(51), flags: [], original: keyEvent(51, down: false))
+        }
+
+        for (character, code) in [(Character("a"), 0), (Character("d"), 2), (Character("d"), 2),
+                                  (Character("r"), 15)] {
+            _ = coordinator.handle(.keyDown(character, code), flags: [], original: keyEvent(code, down: true))
+        }
+        _ = coordinator.handle(.keyDown(" ", 49), flags: [], original: keyEvent(49, down: true))
+
+        XCTAssertEqual(injector.erasedTriggers, ["addr"], "the retyped word is a fresh word")
+        XCTAssertEqual(injector.insertions.map(\.0), ["123 Main St"])
+    }
+
+    func testAPartialCorrectionCompletesFromTheDocument() {
+        let (coordinator, injector, _) = subject([combo("addr", parts: [textPart("123 Main St")])])
+        for (character, code) in [(Character("a"), 0), (Character("d"), 2), (Character("r"), 15),
+                                  (Character("r"), 15)] {
+            _ = coordinator.handle(.keyDown(character, code), flags: [], original: keyEvent(code, down: true))
+        }
+        for _ in 0..<2 {
+            _ = coordinator.handle(.edit(51), flags: [], original: keyEvent(51, down: true))
+            _ = coordinator.handle(.keyUp(51), flags: [], original: keyEvent(51, down: false))
+        }
+
+        _ = coordinator.handle(.keyDown("d", 2), flags: [], original: keyEvent(2, down: true))
+        _ = coordinator.handle(.keyDown("r", 15), flags: [], original: keyEvent(15, down: true))
+        _ = coordinator.handle(.keyDown(" ", 49), flags: [], original: keyEvent(49, down: true))
+
+        XCTAssertEqual(injector.erasedTriggers, ["addr"], "the word in the document is the candidate")
+        XCTAssertEqual(injector.insertions.map(\.0), ["123 Main St"])
+    }
+
+    /// A caret move changes no text, so there is nothing to re-read. Reseeding on a move would let an
+    /// arrow key arm an expansion nobody typed.
+    func testACaretMoveClearsTheCandidateWithoutReseedingIt() {
+        let (coordinator, injector, _) = subject([combo("addr", parts: [textPart("123 Main St")])])
+        _ = coordinator.handle(.keyDown("a", 0), flags: [], original: keyEvent(0, down: true))
+        _ = coordinator.handle(.keyDown("d", 2), flags: [], original: keyEvent(2, down: true))
+
+        _ = coordinator.handle(.edit(123), flags: [], original: keyEvent(123, down: true))
+
+        _ = coordinator.handle(.keyDown("d", 2), flags: [], original: keyEvent(2, down: true))
+        _ = coordinator.handle(.keyDown("r", 15), flags: [], original: keyEvent(15, down: true))
+        _ = coordinator.handle(.keyDown(" ", 49), flags: [], original: keyEvent(49, down: true))
+
+        XCTAssertTrue(injector.insertions.isEmpty, "an arrow key must not arm an expansion")
+    }
+
+    /// `⌥⌫` deletes a word and `⌘⌫` the line. A model that dropped one character for each would end up
+    /// longer than the screen, and the next correction would be computed from text that is not there.
+    func testWordAndLineDeletionsMoveTheModelByWhatTheyActuallyRemove() {
+        let (coordinator, injector, _) = subject([combo("addr", parts: [textPart("123 Main St")])])
+        for (character, code) in [(Character("a"), 0), (Character("d"), 2), (Character("d"), 2),
+                                  (Character("r"), 15)] {
+            _ = coordinator.handle(.keyDown(character, code), flags: [], original: keyEvent(code, down: true))
+        }
+        // ⌥⌫: the app drops the whole word. The model must agree, so the candidate that follows is
+        // rebuilt from what is left rather than from a word that no longer exists.
+        _ = coordinator.handle(.edit(51), flags: .maskAlternate, original: keyEvent(51, down: true))
+        _ = coordinator.handle(.keyUp(51), flags: .maskAlternate, original: keyEvent(51, down: false))
+
+        for (character, code) in [(Character("a"), 0), (Character("d"), 2), (Character("d"), 2),
+                                  (Character("r"), 15)] {
+            _ = coordinator.handle(.keyDown(character, code), flags: [], original: keyEvent(code, down: true))
+        }
+        _ = coordinator.handle(.keyDown(" ", 49), flags: [], original: keyEvent(49, down: true))
+
+        XCTAssertEqual(injector.insertions.map(\.0), ["123 Main St"],
+                       "the model has to match the screen after a word delete")
+    }
+
+    /// Clearing the field with ⌘A then delete empties the document, but our model of it sees only the
+    /// one delete. Keeping the rest of the model makes every later correction answer with words that
+    /// are not on screen -- the reported "it only works once".
+    func testASelectAllShortcutThrowsTheModelAway() {
+        let (coordinator, injector, _) = subject([combo("addr", parts: [textPart("123 Main St")])])
+        func type(_ text: String) {
+            for character in text {
+                _ = coordinator.handle(.keyDown(character, 0), flags: [], original: keyEvent(0, down: true))
+            }
+        }
+        func backspace() {
+            _ = coordinator.handle(.edit(51), flags: [], original: keyEvent(51, down: true))
+            _ = coordinator.handle(.keyUp(51), flags: [], original: keyEvent(51, down: false))
+        }
+
+        type("adddr")
+        // ⌘A: a shortcut we never render, whose effect on the document we cannot see.
+        _ = coordinator.handle(.keyDown("a", 0), flags: .maskCommand, original: keyEvent(0, down: true))
+        backspace()
+
+        type("adddr")
+        for _ in 0..<3 { backspace() }   // leaves "ad"
+        type("dr ")
+        XCTAssertEqual(injector.insertions.map(\.0), ["123 Main St"],
+                       "the correction after a select-all clear has to work")
+    }
+
+    func testAnIdleTickWhileTheTriggerIsStillBeingTypedDoesNotAbandonIt() {
+        let (coordinator, injector, _) = subject([combo("addr", parts: [textPart("123 Main St")])])
+        for (character, code) in [(Character("a"), 0), (Character("d"), 2), (Character("d"), 2)] {
+            _ = coordinator.handle(.keyDown(character, code), flags: [], original: keyEvent(code, down: true))
+        }
+
+        // The timer ticks whatever the keys are doing. One second after the last keystroke is not idle,
+        // and draining anyway would clear a candidate one character from completing.
+        _ = coordinator.handleIdle(now: Date().addingTimeInterval(1))
+
+        _ = coordinator.handle(.keyDown("r", 15), flags: [], original: keyEvent(15, down: true))
+        _ = coordinator.handle(.keyDown(" ", 49), flags: [], original: keyEvent(49, down: true))
+
+        XCTAssertEqual(injector.insertions.map(\.0), ["123 Main St"],
+                       "a candidate the person is still typing survives an early tick")
+    }
+
+    func testEightSecondsOfSilenceAbandonsTheCandidate() {
+        let (coordinator, injector, _) = subject([combo("addr", parts: [textPart("123 Main St")])])
+        _ = coordinator.handle(.keyDown("a", 0), flags: [], original: keyEvent(0, down: true))
+
+        _ = coordinator.handleIdle(now: Date().addingTimeInterval(ExpansionCoordinator.idleGrace))
+
+        for (character, code) in [(Character("d"), 2), (Character("d"), 2), (Character("r"), 15)] {
+            _ = coordinator.handle(.keyDown(character, code), flags: [], original: keyEvent(code, down: true))
+        }
+        _ = coordinator.handle(.keyDown(" ", 49), flags: [], original: keyEvent(49, down: true))
+
+        XCTAssertTrue(injector.insertions.isEmpty,
+                      "after a walk-away the word starts over, so the abandoned 'a' cannot complete it")
     }
 
     func testAPrefixThatStopsMatchingDoesNotTouchTheInjector() {

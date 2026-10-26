@@ -99,10 +99,45 @@ Return, Tab, emoji -- is a **delimiter**. The state machine consumes one decoded
 Rule 4 means a trigger at the very end of a line expands on the next keystroke rather than on its
 own. That is the accepted cost of not firing inside words, and it is how Beeftext and espanso behave.
 
-Expansion means the tap returns `nil` for the trigger's events, so the trigger never renders in the
-target document and no synthetic backspaces are ever sent. Released characters are re-posted as
-new key events by the adapter, which is why `release` and `expand` are distinct actions in the engine's
-output.
+### Render, then rewrite
+
+Expansion does not hide the trigger. Every keystroke reaches the target app as typed, and on a match
+the adapter erases the trigger characters that are already on screen and puts the replacement where
+they were. This was a product decision, not an implementation shortcut: the user asked to see what they
+type, and a model that swallows characters can lose them outright when a tap is switched off mid-word.
+
+Erasing means asking the **document**, not the keystroke tally. The tally is a promise about events this
+app saw; it cannot know what the target app did with them, and two real failures came from that gap --
+a posted backspace spent on something other than a character (Chromium's address bar uses the first one
+to drop its inline autocomplete, so part of the trigger survived the rewrite), and a rewrite running
+after the user had already typed the next word, which then deleted that word. So on fire:
+
+1. Read the focused field's text and caret through Accessibility.
+2. If the characters immediately before the caret are this trigger -- equal, or equal but for case,
+   because text apps capitalise the first word of a sentence as it is typed -- select exactly that range
+   and read the selection back. The replacement paste then lands on it, and nothing depends on how many
+   backspaces a given app chooses to honour.
+3. If the field reports its own contents and they are **not** this trigger, the expansion stands down.
+   The delimiter the user pressed still lands. Deleting anyway would overwrite text the user never
+   typed, which is a worse failure than an expansion that did not fire.
+4. If the field will not report at all -- no Accessibility value, a selection already in the way, a
+   caret outside the text it gave -- fall back to posting one backspace per typed character, which is
+   the best that can be done without asking.
+
+### Corrections keep their own model
+
+A hand correction breaks the keystroke stream: `adddr` → three backspaces → `dr ` leaves the word
+`addr` in the document, but no sequence of presses ever spelled it, so a matcher fed by presses alone
+cannot know it. Reading the answer from the document does not work either -- an Accessibility read loses
+against the target app's own event queue and answers one deletion behind, which was watched happening
+in the live trace.
+
+So the adapter maintains a model of the text at the caret: each rendered character is appended, each
+backspace removes one, an expansion writes the replacement back in, and a caret move discards the model
+because its ordering assumption is gone. The candidate after a deletion is the trailing run of word
+characters in that model. The model is an optimisation, not an authority -- the document check above
+still has to agree before anything is deleted, so a model that has drifted can only miss an expansion,
+never eat text the user did not type.
 
 ## Insertion and the placeholder prompt
 

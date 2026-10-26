@@ -1,7 +1,7 @@
 import Foundation
 
 public struct Matcher: Sendable {
-    private let index: TriggerIndex
+    private var index: TriggerIndex
     /// The swallowed prefix still held back from the document: the trailing run of
     /// characters that could still complete a trigger, or "" when nothing is pending.
     public private(set) var buffer: String = ""
@@ -12,6 +12,16 @@ public struct Matcher: Sendable {
 
     public init(index: TriggerIndex) {
         self.index = index
+    }
+
+    /// Point the machine at a different set of triggers.
+    ///
+    /// The half-typed `buffer` belongs to the index it was matched against, so it goes; the boundary
+    /// does not, because the document the user is typing into has not changed. An editor that saves a
+    /// combo has to be able to say "use these triggers now" rather than restart the process.
+    public mutating func reload(index: TriggerIndex) {
+        self.index = index
+        buffer = ""
     }
 
     public mutating func feed(_ character: Character) -> [MatchAction] {
@@ -62,6 +72,19 @@ public struct Matcher: Sendable {
     /// longer the most recent thing in the field.
     public mutating func noteRendered(_ character: Character) {
         lastEmitted = character
+    }
+
+    /// Rebuild the candidate from text that is already in the document.
+    ///
+    /// A hand correction -- delete two letters, type two more -- produces a word the keystroke stream
+    /// never spelled out in order, so the candidate cannot come from the keystrokes. The adapter reads
+    /// the word in front of the caret and offers it here; only a run that could still become a trigger
+    /// is kept, which is what stops `paddin` from seeding anything.
+    public mutating func resync(word: String) {
+        buffer = ""
+        lastEmitted = nil
+        guard !word.isEmpty, word.allSatisfy(isWordCharacter), index.isPrefix(word) else { return }
+        buffer = word
     }
 
     private var atBoundary: Bool {
