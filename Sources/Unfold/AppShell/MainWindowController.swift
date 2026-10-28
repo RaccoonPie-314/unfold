@@ -11,31 +11,25 @@ import UnfoldMac
 /// look an app is allowed to have. `materials.md` is explicit about the rest: "Don't use Liquid Glass
 /// in the content layer." So the editor, the list rows and the inspector are ordinary content on
 /// ordinary materials, and nothing here draws a custom glass surface.
-final class MainWindowController: NSWindowController, NSToolbarDelegate, NSTextFieldDelegate,
-                                  NSTextViewDelegate, NSWindowDelegate {
+final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindowDelegate {
     private let coordinator: ExpansionCoordinator
     private let store: Store
-    private let consistencyTest: ConsistencyTest
+    /// Built against the editor pane's Try-it field, so it waits until that pane's view exists --
+    /// `init` loads it before anything reads this.
+    private lazy var consistencyTest = ConsistencyTest(coordinator: coordinator,
+                                                       textView: editor.tryTextView)
 
     private var file: CombosFile
     private var selectedID: UUID?
 
     private let splitView = NSSplitViewController()
     private let sidebar = SidebarViewController()
+    private let editor = EditorViewController()
     /// The single source of the filter text. The pane holds no copy of it, so `addCombo` clearing the
     /// filter and the empty-state copy cannot disagree with what the list shows.
     private var filter = ""
-    private let triggerField = NSTextField(string: "")
-    private let replacementScroll = NSScrollView()
-    private let replacementView = NSTextView()
-    private let insertionPopUp = NSPopUpButton()
-    private let enabledCheck = NSButton(checkboxWithTitle: "Enabled", target: nil, action: nil)
-    private let editorHint = NSTextField(wrappingLabelWithString: "")
-    private let tryScroll = NSScrollView()
-    private let tryView = NSTextView()
     private let diagnosticsSummary = NSTextField(wrappingLabelWithString: "")
     private let testResult = NSTextField(labelWithString: "")
-    private let pathLabel = NSTextField(labelWithString: "")
 
     private var diagnosticsItem: NSSplitViewItem!
     private var pauseItem: NSToolbarItem?
@@ -58,7 +52,6 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSTextF
         self.store = store
         self.file = (try? store.load())
             ?? CombosFile(formatVersion: CombosFile.currentFormatVersion, combos: [])
-        self.consistencyTest = ConsistencyTest(coordinator: coordinator, textView: tryView)
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 860, height: 560),
@@ -80,34 +73,66 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSTextF
         super.init(window: window)
         window.delegate = self
 
-        buildDetail()
+        // The panes' views must exist before anything reaches into their controls -- the window's
+        // `initialFirstResponder`, the pane closures below, and the consistency test all do. Loading
+        // them here makes that a contract instead of an accident of `assembleSplitView()` touching
+        // `splitView.view` first.
+        sidebar.loadViewIfNeeded()
+        editor.loadViewIfNeeded()
+
         buildDiagnostics()
         assembleSplitView()
         installToolbar()
         restoreFrame(window)
 
-        // The plumbing between the pane and the state it renders. Installed before the first
+        // The plumbing between the panes and the state they render. Installed before the first
         // `reloadRows()`, because that call puts a selection on screen and the controller has to hear
         // about it.
         sidebar.onSelect = { [weak self] id in
             self?.selectedID = id
-            self?.loadEditor()
+            self?.redisplay()
         }
         sidebar.onFilter = { [weak self] needle in
             self?.filter = needle
             self?.reloadRows()
         }
-        // In this task it still opens the controller's own trigger field; Task 4 replaces the body with
-        // `self?.editor.beginTriggerEdit()` once the editor is a pane.
         sidebar.onRequestEdit = { [weak self] in
-            self?.editTriggerFromList()
+            self?.editor.beginTriggerEdit()
+        }
+        editor.onEdit = { [weak self] edit in
+            guard let self else { return }
+            switch edit {
+            case .trigger(let value):
+                self.mutate { $0.trigger = value }
+                self.reloadRows()
+                self.redisplay()
+            case .replacement(let text):
+                // Deliberately not `redisplay()`: the user is typing in the replacement view right now,
+                // and `editor.display(_:)` would rewrite its string under a mid-word caret. The hint
+                // still refreshes, because the trigger's burn-down of this text just changed.
+                do {
+                    let parts = try Template.parse(text)
+                    self.mutate { $0.parts = parts }
+                    self.reloadRows()
+                    if let combo = self.selected() {
+                        self.editor.showHint(self.hint(for: combo), failure: false)
+                    }
+                } catch {
+                    self.editor.showHint("Not saved — \(error)", failure: true)
+                }
+            case .insertion(let mode):
+                self.mutate { $0.insertion = mode }
+            case .enabled(let on):
+                self.mutate { $0.enabled = on }
+                self.reloadRows()
+            }
         }
 
         // The list, not the filter: an accidental keystroke should move the selection, not quietly
         // narrow the library to nothing.
         window.initialFirstResponder = sidebar.listTableView
         reloadRows()
-        loadEditor()
+        redisplay()
         refreshStatus()
         startStatusTimer()
     }
@@ -131,105 +156,6 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSTextF
     }
 
     // MARK: - Construction
-
-    private func buildDetail() {
-        triggerField.delegate = self
-        triggerField.placeholderString = "addr"
-        triggerField.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
-        triggerField.target = self
-        triggerField.action = #selector(commitTrigger)
-
-        configure(replacementView, in: replacementScroll, monospaced: true)
-        replacementView.delegate = self
-
-        insertionPopUp.addItems(withTitles: ["Paste", "Type as keystrokes"])
-        insertionPopUp.target = self
-        insertionPopUp.action = #selector(commitInsertion)
-        enabledCheck.target = self
-        enabledCheck.action = #selector(commitEnabled)
-
-        editorHint.font = .secondaryLabelFont()
-        editorHint.textColor = .secondaryLabelColor
-        editorHint.maximumNumberOfLines = 2
-        editorHint.setContentHuggingPriority(.defaultLow, for: .vertical)
-
-        configure(tryView, in: tryScroll, monospaced: false)
-
-        pathLabel.font = .secondaryLabelFont()
-        pathLabel.textColor = .secondaryLabelColor
-        pathLabel.lineBreakMode = .byTruncatingMiddle
-        pathLabel.stringValue = shortPath()
-        pathLabel.toolTip = store.url.path
-        pathLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
-
-        // Two columns, pinned by hand rather than by stack views: an 82-point caption column that
-        // right-aligns, a 12-point gutter, and controls that take everything left over. Stack views
-        // distribute their slack through gravity areas, which let the caption column drift a few
-        // hundred points sideways while still reporting a satisfied layout.
-        let triggerCaption = caption("Trigger")
-        let replacementCaption = caption("Replacement")
-        let tryCaption = caption("Try it")
-        let container = NSView()
-        let views = [triggerCaption, replacementCaption, tryCaption, triggerField, editorHint,
-                     replacementScroll, insertionPopUp, enabledCheck, tryScroll, pathLabel]
-        views.forEach {
-            $0.translatesAutoresizingMaskIntoConstraints = false
-            container.addSubview($0)
-        }
-
-        let guide = container.safeAreaLayoutGuide
-        // Pane padding + the 82-point caption column, and the same plus a 12-point gutter.
-        let captionColumn: CGFloat = 24 + 82
-        let controlColumn: CGFloat = captionColumn + 12
-
-        NSLayoutConstraint.activate([
-            triggerCaption.trailingAnchor.constraint(equalTo: guide.leadingAnchor, constant: captionColumn),
-            replacementCaption.trailingAnchor.constraint(equalTo: guide.leadingAnchor,
-                                                         constant: captionColumn),
-            tryCaption.trailingAnchor.constraint(equalTo: guide.leadingAnchor, constant: captionColumn),
-
-            triggerField.leadingAnchor.constraint(equalTo: guide.leadingAnchor, constant: controlColumn),
-            editorHint.leadingAnchor.constraint(equalTo: guide.leadingAnchor, constant: controlColumn),
-            replacementScroll.leadingAnchor.constraint(equalTo: guide.leadingAnchor, constant: controlColumn),
-            insertionPopUp.leadingAnchor.constraint(equalTo: guide.leadingAnchor, constant: controlColumn),
-            tryScroll.leadingAnchor.constraint(equalTo: guide.leadingAnchor, constant: controlColumn),
-            triggerField.trailingAnchor.constraint(equalTo: guide.trailingAnchor, constant: -24),
-            editorHint.trailingAnchor.constraint(equalTo: guide.trailingAnchor, constant: -24),
-            replacementScroll.trailingAnchor.constraint(equalTo: guide.trailingAnchor, constant: -24),
-            tryScroll.trailingAnchor.constraint(equalTo: guide.trailingAnchor, constant: -24),
-            pathLabel.leadingAnchor.constraint(equalTo: guide.leadingAnchor, constant: 24),
-            pathLabel.trailingAnchor.constraint(equalTo: guide.trailingAnchor, constant: -24),
-
-            triggerField.topAnchor.constraint(equalTo: guide.topAnchor, constant: 20),
-            triggerCaption.centerYAnchor.constraint(equalTo: triggerField.centerYAnchor),
-            editorHint.topAnchor.constraint(equalTo: triggerField.bottomAnchor, constant: 4),
-
-            replacementScroll.topAnchor.constraint(equalTo: editorHint.bottomAnchor, constant: 16),
-            replacementScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 110).withPriority(750),
-            replacementCaption.topAnchor.constraint(equalTo: replacementScroll.topAnchor, constant: 3),
-            insertionPopUp.topAnchor.constraint(equalTo: replacementScroll.bottomAnchor, constant: 10),
-            enabledCheck.leadingAnchor.constraint(equalTo: insertionPopUp.trailingAnchor, constant: 10),
-            enabledCheck.centerYAnchor.constraint(equalTo: insertionPopUp.centerYAnchor),
-
-            tryScroll.topAnchor.constraint(equalTo: insertionPopUp.bottomAnchor, constant: 18),
-            tryScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 80).withPriority(750),
-            tryCaption.topAnchor.constraint(equalTo: tryScroll.topAnchor, constant: 3),
-
-            pathLabel.topAnchor.constraint(equalTo: tryScroll.bottomAnchor, constant: 14),
-            pathLabel.bottomAnchor.constraint(equalTo: guide.bottomAnchor, constant: -14),
-
-            // The spare height the window has left over goes to the two text areas equally. Left to
-            // their own devices, the lower one absorbs all of it and the editor looks lopsided.
-            tryScroll.heightAnchor.constraint(equalTo: replacementScroll.heightAnchor).withPriority(250),
-        ])
-        for scroll in [replacementScroll, tryScroll] {
-            scroll.setContentHuggingPriority(.defaultLow, for: .vertical)
-            scroll.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
-        }
-        detailContainer = container
-    }
-
-    private var detailContainer: NSView!
 
     private func buildDiagnostics() {
         diagnosticsSummary.font = .secondaryLabelFont()
@@ -284,9 +210,9 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSTextF
     private var diagnosticsContainer: NSView!
 
     private func assembleSplitView() {
-        // The pane is its own view controller now, so it goes in the split view directly instead of
-        // through `host`. Its title is set here because the other two panes still get theirs from
-        // `host(_:label:)`.
+        // The panes are their own view controllers now, so they go in the split view directly instead
+        // of through `host`. Their titles are set here because the diagnostics pane still gets its
+        // title from `host(_:label:)`.
         sidebar.title = "Combos"
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebar)
         sidebarItem.minimumThickness = 190
@@ -294,7 +220,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSTextF
         sidebarItem.canCollapse = false
         splitView.addSplitViewItem(sidebarItem)
 
-        let detail = NSSplitViewItem(viewController: host(detailContainer, label: "Combo"))
+        editor.title = "Combo"
+        let detail = NSSplitViewItem(viewController: editor)
         detail.minimumThickness = 380
         splitView.addSplitViewItem(detail)
 
@@ -338,34 +265,6 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSTextF
         controller.title = label
         controller.view = view
         return controller
-    }
-
-    private func configure(_ textView: NSTextView, in scroll: NSScrollView, monospaced: Bool) {
-        textView.isRichText = false
-        textView.allowsUndo = true
-        textView.isAutomaticQuoteSubstitutionEnabled = false
-        textView.isAutomaticDashSubstitutionEnabled = false
-        textView.isAutomaticTextReplacementEnabled = false
-        textView.isAutomaticSpellingCorrectionEnabled = false
-        textView.isAutomaticDataDetectionEnabled = false
-        textView.isAutomaticLinkDetectionEnabled = false
-        textView.font = monospaced ? .monospacedSystemFont(ofSize: 13, weight: .regular)
-                                   : .systemFont(ofSize: 13)
-        textView.isVerticallyResizable = true
-        textView.autoresizingMask = [.width]
-        textView.textContainer?.widthTracksTextView = true
-        scroll.documentView = textView
-        scroll.hasVerticalScroller = true
-        scroll.drawsBackground = true
-        scroll.borderType = .bezelBorder
-    }
-
-    private func caption(_ text: String) -> NSTextField {
-        let label = NSTextField(labelWithString: text)
-        label.font = .systemFont(ofSize: 11)
-        label.textColor = .secondaryLabelColor
-        label.alignment = .right
-        return label
     }
 
     private func vstack(_ views: [NSView], spacing: CGFloat) -> NSStackView {
@@ -469,35 +368,26 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSTextF
 
     // MARK: - Editor
 
-    private func loadEditor() {
-        guard let combo = selected() else {
-            triggerField.stringValue = ""
-            replacementView.string = ""
-            triggerField.isEnabled = false
-            replacementView.isEditable = false
-            insertionPopUp.isEnabled = false
-            enabledCheck.state = .off
-            let emptyMessage: String
-            if file.combos.isEmpty {
-                emptyMessage = "No combos yet. Choose Add Combo in the toolbar, or press ⌘N."
-            } else if sidebar.listTableView.numberOfRows == 0 {
-                // The pane's row count is the filtered list, so this cannot disagree with what the list
-                // shows; `filter` is the text behind it.
-                emptyMessage = "Nothing matches «\(filter)»."
-            } else {
-                emptyMessage = "Select a combo in the sidebar."
-            }
-            showHint(emptyMessage, red: false)
-            return
+    /// Picks the selected combo and hands the editor pane both the combo and the hint. The hint text
+    /// stays here: `hint(for:)` reads the whole library for duplicate triggers and uses `TriggerIndex`
+    /// for rejections, so it is model logic, not pane logic.
+    private func redisplay() {
+        let combo = selected()
+        editor.display(combo)
+        editor.showHint(combo.map(hint(for:)) ?? emptySelectionMessage, failure: false)
+    }
+
+    /// The three-way empty-selection copy, unchanged: it depends on `file.combos.isEmpty` and the
+    /// filter, neither of which the editor pane knows about.
+    private var emptySelectionMessage: String {
+        if file.combos.isEmpty {
+            return "No combos yet. Choose Add Combo in the toolbar, or press ⌘N."
+        } else if sidebar.isEmptyList {
+            // The pane's visible list is the filtered one, so this cannot disagree with what the list
+            // shows; `filter` is the text behind it.
+            return "Nothing matches «\(filter)»."
         }
-        triggerField.isEnabled = true
-        replacementView.isEditable = true
-        insertionPopUp.isEnabled = true
-        triggerField.stringValue = combo.trigger
-        replacementView.string = Template.serialize(combo.parts)
-        insertionPopUp.selectItem(withTitle: combo.insertion == .paste ? "Paste" : "Type as keystrokes")
-        enabledCheck.state = combo.enabled ? .on : .off
-        showHint(hint(for: combo), red: false)
+        return "Select a combo in the sidebar."
     }
 
     private func selected() -> Combo? {
@@ -517,52 +407,6 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSTextF
             return "Matching is case-sensitive: «\(combo.trigger)» only fires on that exact spelling."
         }
         return "Saves as you type. A space, comma, period or return fires the trigger."
-    }
-
-    private func showHint(_ text: String, red: Bool) {
-        editorHint.stringValue = text
-        editorHint.textColor = red ? .systemRed : .secondaryLabelColor
-    }
-
-    func controlTextDidEndEditing(_ notification: Notification) {
-        if (notification.object as? NSControl) === triggerField { commitTrigger() }
-    }
-
-    /// "Saves as you type" is the promise the hint makes, so the replacement commits on change rather
-    /// than on focus loss. It deliberately does not reload the editor: rewriting the string under a
-    /// caret that is mid-word moves the caret to the end.
-    func textDidChange(_ notification: Notification) {
-        guard (notification.object as? NSTextView) === replacementView else { return }
-        commitReplacement(replacementView.string)
-    }
-
-    @objc private func commitTrigger() {
-        let wanted = triggerField.stringValue
-        mutate { $0.trigger = wanted }
-        reloadRows()
-        loadEditor()
-    }
-
-    @objc private func commitInsertion() {
-        let mode: InsertionMode = insertionPopUp.indexOfSelectedItem == 0 ? .paste : .keys
-        mutate { $0.insertion = mode }
-    }
-
-    @objc private func commitEnabled() {
-        let wanted = enabledCheck.state == .on
-        mutate { $0.enabled = wanted }
-        reloadRows()
-    }
-
-    private func commitReplacement(_ text: String) {
-        do {
-            let parts = try Template.parse(text)
-            mutate { $0.parts = parts }
-            reloadRows()
-            if let combo = selected() { showHint(hint(for: combo), red: false) }
-        } catch {
-            showHint("Not saved — \(error)", red: true)
-        }
     }
 
     private func mutate(_ change: (inout Combo) -> Void) {
@@ -601,9 +445,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSTextF
         if let row = file.combos.firstIndex(where: { $0.id == combo.id }) {
             sidebar.listTableView.scrollRowToVisible(row)
         }
-        loadEditor()
-        window?.makeFirstResponder(triggerField)
-        triggerField.selectText(nil)
+        redisplay()
+        editor.beginTriggerEdit()
     }
 
     @objc func deleteCombo(_ sender: Any?) {
@@ -626,7 +469,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSTextF
                 self.selectedID = previousID
             }
             self.reloadRows()
-            self.loadEditor()
+            self.redisplay()
         }
     }
 
@@ -635,7 +478,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSTextF
         do {
             try store.save(file)
         } catch {
-            showHint("Could not save — \(error)", red: true)
+            editor.showHint("Could not save — \(error)", failure: true)
             NSSound.beep()
             return false
         }
@@ -654,11 +497,6 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSTextF
                 || $0.preview.lowercased().contains(needle)
         }
         sidebar.setRows(matching, selecting: selectedID)
-    }
-
-    @objc private func editTriggerFromList() {
-        window?.makeFirstResponder(triggerField)
-        triggerField.selectText(nil)
     }
 
     // MARK: - Status
@@ -697,7 +535,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSTextF
         pauseItem?.image = NSImage(systemSymbolName: coordinator.isPaused ? "play.fill" : "pause.fill",
                                    accessibilityDescription: coordinator.isPaused ? "Resume" : "Pause")
         pauseItem?.label = coordinator.isPaused ? "Resume" : "Pause"
-        pathLabel.stringValue = shortPath()
+        editor.showPath(short: shortPath(), toolTip: store.url.path)
         diagnosticsSummary.stringValue =
             "Keystrokes seen \(coordinator.keystrokesSeen)\n"
             + "Tap switched off by macOS \(coordinator.tapDisableObservations)×\n"
@@ -755,8 +593,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSTextF
 
     @objc private func runSelfTest() {
         show()
-        window?.makeFirstResponder(tryView)
-        tryView.string = ""
+        editor.beginTryEdit()
         SyntheticKeys.selectAll()
         SyntheticKeys.type("addr ") { [weak self] in
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { self?.refreshStatus() }
@@ -765,8 +602,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSTextF
 
     @objc private func testIdleTimeout() {
         show()
-        window?.makeFirstResponder(tryView)
-        tryView.string = ""
+        editor.beginTryEdit()
         SyntheticKeys.type("ad") { [weak self] in
             DispatchQueue.main.asyncAfter(deadline: .now() + 9.5) {
                 self?.refreshStatus()
@@ -800,14 +636,6 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSTextF
         consistencyTest.start(stressRounds: 40) { [weak self] summary in
             self?.testResult.stringValue = summary
         }
-    }
-}
-
-private extension NSLayoutConstraint {
-    /// Sets the priority inline, so a list of activated constraints reads with its own breakability.
-    func withPriority(_ priority: Float) -> NSLayoutConstraint {
-        self.priority = NSLayoutConstraint.Priority(priority)
-        return self
     }
 }
 

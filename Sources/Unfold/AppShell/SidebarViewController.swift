@@ -21,9 +21,9 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     /// against it to decide which rows animate in and which animate out.
     private var shownIDs: [UUID] = []
 
-    /// The field's current text, for the controller's empty-state copy. The pane keeps no filter string
-    /// of its own -- `MainWindowController.filter` is the single source, and the controller filters.
-    var searchText: String { searchField.stringValue }
+    /// True when the list shows no rows. The controller reads this for its empty-state copy instead of
+    /// reaching into the table view.
+    var isEmptyList: Bool { visible.isEmpty }
     /// Read-only, because the window sets `initialFirstResponder` to the list and the controller cannot
     /// reach a private property of the pane.
     var listTableView: NSTableView { tableView }
@@ -110,8 +110,6 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         shownIDs = visible.map(\.id)
     }
 
-    func focusList() { view.window?.makeFirstResponder(tableView) }
-
     /// The selected row's frame in screen coordinates -- the anchor the editor's morph starts from.
     var selectedRowFrame: CGRect? {
         let row = tableView.selectedRow
@@ -122,6 +120,10 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
 
     /// The controller clears the filter when a combo is added, because "new" is a word a half-typed
     /// filter would hide.
+    ///
+    /// Contract: this clears the field's text only. The caller owns `MainWindowController.filter` and
+    /// must reset it too -- setting `stringValue` programmatically does not fire `controlTextDidChange`,
+    /// so the pane never learns about it on its own.
     func clearFilter() {
         searchField.stringValue = ""
     }
