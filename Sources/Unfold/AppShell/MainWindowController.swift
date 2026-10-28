@@ -11,8 +11,7 @@ import UnfoldMac
 /// look an app is allowed to have. `materials.md` is explicit about the rest: "Don't use Liquid Glass
 /// in the content layer." So the editor, the list rows and the inspector are ordinary content on
 /// ordinary materials, and nothing here draws a custom glass surface.
-final class MainWindowController: NSWindowController, NSToolbarDelegate, NSTableViewDataSource,
-                                  NSTableViewDelegate, NSTextFieldDelegate, NSSearchFieldDelegate,
+final class MainWindowController: NSWindowController, NSToolbarDelegate, NSTextFieldDelegate,
                                   NSTextViewDelegate, NSWindowDelegate {
     private let coordinator: ExpansionCoordinator
     private let store: Store
@@ -22,11 +21,10 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSTable
     private var selectedID: UUID?
 
     private let splitView = NSSplitViewController()
-    private let tableView = NSTableView()
-    private let sidebarScroll = NSScrollView()
-    private let searchField = NSSearchField()
+    private let sidebar = SidebarViewController()
+    /// The single source of the filter text. The pane holds no copy of it, so `addCombo` clearing the
+    /// filter and the empty-state copy cannot disagree with what the list shows.
     private var filter = ""
-    private var visible: [Combo] = []
     private let triggerField = NSTextField(string: "")
     private let replacementScroll = NSScrollView()
     private let replacementView = NSTextView()
@@ -82,15 +80,32 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSTable
         super.init(window: window)
         window.delegate = self
 
-        buildSidebar()
         buildDetail()
         buildDiagnostics()
         assembleSplitView()
         installToolbar()
         restoreFrame(window)
+
+        // The plumbing between the pane and the state it renders. Installed before the first
+        // `reloadRows()`, because that call puts a selection on screen and the controller has to hear
+        // about it.
+        sidebar.onSelect = { [weak self] id in
+            self?.selectedID = id
+            self?.loadEditor()
+        }
+        sidebar.onFilter = { [weak self] needle in
+            self?.filter = needle
+            self?.reloadRows()
+        }
+        // In this task it still opens the controller's own trigger field; Task 4 replaces the body with
+        // `self?.editor.beginTriggerEdit()` once the editor is a pane.
+        sidebar.onRequestEdit = { [weak self] in
+            self?.editTriggerFromList()
+        }
+
         // The list, not the filter: an accidental keystroke should move the selection, not quietly
         // narrow the library to nothing.
-        window.initialFirstResponder = tableView
+        window.initialFirstResponder = sidebar.listTableView
         reloadRows()
         loadEditor()
         refreshStatus()
@@ -116,54 +131,6 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSTable
     }
 
     // MARK: - Construction
-
-    private func buildSidebar() {
-        tableView.headerView = nil
-        tableView.selectionHighlightStyle = .sourceList
-        tableView.style = .sourceList
-        tableView.allowsMultipleSelection = false
-        tableView.allowsEmptySelection = true
-        tableView.usesAutomaticRowHeights = true
-        tableView.dataSource = self
-        tableView.delegate = self
-        tableView.target = self
-        tableView.doubleAction = #selector(editTriggerFromList)
-
-        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("combo"))
-        column.resizingMask = .autoresizingMask
-        tableView.addTableColumn(column)
-
-        sidebarScroll.documentView = tableView
-        sidebarScroll.hasVerticalScroller = true
-        sidebarScroll.drawsBackground = false
-        // The filter pill owns the strip under the toolbar, so the scroll view must not inset itself
-        // for it as well.
-        sidebarScroll.automaticallyAdjustsContentInsets = false
-
-        // The stock search field, not a field inside a hand-made glass capsule: on macOS 26 the
-        // system control already *is* the glass pill, and stripping its bezel to put glass behind it
-        // only removes the inset that keeps the magnifier out of the placeholder text.
-        searchField.placeholderString = "Filter"
-        searchField.delegate = self
-        searchField.translatesAutoresizingMaskIntoConstraints = false
-        sidebarScroll.translatesAutoresizingMaskIntoConstraints = false
-
-        let container = NSView()
-        container.addSubview(searchField)
-        container.addSubview(sidebarScroll)
-        NSLayoutConstraint.activate([
-            searchField.topAnchor.constraint(equalTo: container.safeAreaLayoutGuide.topAnchor, constant: 8),
-            searchField.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
-            searchField.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -10),
-            sidebarScroll.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 6),
-            sidebarScroll.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            sidebarScroll.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            sidebarScroll.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-        ])
-        sidebarContainer = container
-    }
-
-    private var sidebarContainer: NSView!
 
     private func buildDetail() {
         triggerField.delegate = self
@@ -317,11 +284,15 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSTable
     private var diagnosticsContainer: NSView!
 
     private func assembleSplitView() {
-        let sidebar = NSSplitViewItem(sidebarWithViewController: host(sidebarContainer, label: "Combos"))
-        sidebar.minimumThickness = 190
-        sidebar.preferredThicknessFraction = 0.3
-        sidebar.canCollapse = false
-        splitView.addSplitViewItem(sidebar)
+        // The pane is its own view controller now, so it goes in the split view directly instead of
+        // through `host`. Its title is set here because the other two panes still get theirs from
+        // `host(_:label:)`.
+        sidebar.title = "Combos"
+        let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebar)
+        sidebarItem.minimumThickness = 190
+        sidebarItem.preferredThicknessFraction = 0.3
+        sidebarItem.canCollapse = false
+        splitView.addSplitViewItem(sidebarItem)
 
         let detail = NSSplitViewItem(viewController: host(detailContainer, label: "Combo"))
         detail.minimumThickness = 380
@@ -496,31 +467,6 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSTable
         addRemoveItems.forEach { $0.isEnabled = true }
     }
 
-    // MARK: - Library list
-
-    func numberOfRows(in tableView: NSTableView) -> Int { visible.count }
-
-    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        guard row < visible.count else { return nil }
-        let cell = ComboRowView.dequeue(from: tableView)
-        cell.apply(visible[row])
-        return cell
-    }
-
-    func tableViewSelectionDidChange(_ notification: Notification) {
-        let row = tableView.selectedRow
-        selectedID = (row >= 0 && row < visible.count) ? visible[row].id : nil
-        loadEditor()
-    }
-
-    /// The filter matches what a person would type or remember: the trigger, the combo's own name, or
-    /// the text it expands to.
-    func controlTextDidChange(_ notification: Notification) {
-        guard (notification.object as? NSControl) === searchField else { return }
-        filter = searchField.stringValue
-        reloadRows()
-    }
-
     // MARK: - Editor
 
     private func loadEditor() {
@@ -534,7 +480,9 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSTable
             let emptyMessage: String
             if file.combos.isEmpty {
                 emptyMessage = "No combos yet. Choose Add Combo in the toolbar, or press ⌘N."
-            } else if visible.isEmpty {
+            } else if sidebar.listTableView.numberOfRows == 0 {
+                // The pane's row count is the filtered list, so this cannot disagree with what the list
+                // shows; `filter` is the text behind it.
                 emptyMessage = "Nothing matches «\(filter)»."
             } else {
                 emptyMessage = "Select a combo in the sidebar."
@@ -631,7 +579,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSTable
         // A new combo is named "new", which a half-typed filter would hide. Clear it rather than
         // letting the user add a combo that appears not to have been added.
         filter = ""
-        searchField.stringValue = ""
+        sidebar.clearFilter()
         let previousID = selectedID
         // No replacement is `parts: []`, not `.text("")`: the plain-text form drops an empty part, so
         // the store refuses to write one. An empty label takes the trigger as its name on the first
@@ -648,8 +596,10 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSTable
             return
         }
         reloadRows()
-        if let row = visible.firstIndex(where: { $0.id == combo.id }) {
-            tableView.scrollRowToVisible(row)
+        // The filter was just cleared, so the list is the whole library in file order and the combo's
+        // index in `file.combos` is its row.
+        if let row = file.combos.firstIndex(where: { $0.id == combo.id }) {
+            sidebar.listTableView.scrollRowToVisible(row)
         }
         loadEditor()
         window?.makeFirstResponder(triggerField)
@@ -694,25 +644,16 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSTable
         return true
     }
 
-    /// Rebuilds the filtered view and puts the selection back where it was. Row indexes are indexes
-    /// into `visible`, never into `file.combos`, so a filter cannot make the editor select a combo
-    /// that is not on screen.
+    /// Rebuilds the filtered view and hands it to the pane: the controller filters, the pane renders.
+    /// The filter matches what a person would type or remember: the trigger, the combo's own name, or
+    /// the text it expands to.
     private func reloadRows() {
-        let previous = selectedID
         let needle = filter.lowercased()
-        visible = needle.isEmpty ? file.combos : file.combos.filter {
+        let matching = needle.isEmpty ? file.combos : file.combos.filter {
             $0.trigger.lowercased().contains(needle) || $0.label.lowercased().contains(needle)
                 || $0.preview.lowercased().contains(needle)
         }
-        tableView.reloadData()
-        if let previous, let index = visible.firstIndex(where: { $0.id == previous }) {
-            tableView.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
-        } else if let first = visible.first {
-            selectedID = first.id
-            tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
-        } else {
-            selectedID = nil
-        }
+        sidebar.setRows(matching, selecting: selectedID)
     }
 
     @objc private func editTriggerFromList() {
@@ -859,92 +800,6 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSTable
         consistencyTest.start(stressRounds: 40) { [weak self] summary in
             self?.testResult.stringValue = summary
         }
-    }
-}
-
-/// A source-list row. The trigger is what a person scans for, so it owns the first line and the
-/// replacement sits underneath it rather than competing for the same row.
-///
-/// Both `NSTableCellView` outlets are set on purpose: the cell only recolours the views handed to
-/// `textField` and `imageView` when a row becomes selected, so a symbol or label wired up as a plain
-/// subview keeps its accent tint and disappears into the blue selection.
-private final class ComboRowView: NSTableCellView {
-    static let identifier = NSUserInterfaceItemIdentifier("unfold.comboRow")
-
-    private let symbol = NSImageView()
-    private let triggerLabel = NSTextField(labelWithString: "")
-    private let previewLabel = NSTextField(labelWithString: "")
-
-    init() {
-        super.init(frame: .zero)
-        triggerLabel.font = .monospacedSystemFont(ofSize: 12.5, weight: .medium)
-        triggerLabel.lineBreakMode = .byTruncatingMiddle
-        previewLabel.font = .systemFont(ofSize: 11)
-        previewLabel.textColor = .secondaryLabelColor
-        previewLabel.lineBreakMode = .byTruncatingTail
-        previewLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        previewLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        triggerLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
-
-        let lines = NSStackView(views: [triggerLabel, previewLabel])
-        lines.orientation = .vertical
-        lines.alignment = .leading
-        lines.spacing = 1
-
-        symbol.translatesAutoresizingMaskIntoConstraints = false
-        lines.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(lines)
-        addSubview(symbol)
-        NSLayoutConstraint.activate([
-            symbol.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
-            symbol.centerYAnchor.constraint(equalTo: triggerLabel.centerYAnchor),
-            symbol.widthAnchor.constraint(equalToConstant: 14),
-            lines.leadingAnchor.constraint(equalTo: symbol.trailingAnchor, constant: 7),
-            lines.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
-            lines.topAnchor.constraint(equalTo: topAnchor, constant: 5),
-            lines.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -5),
-        ])
-
-        textField = triggerLabel
-        imageView = symbol
-    }
-
-    required init?(coder: NSCoder) { fatalError("not used") }
-
-    func apply(_ combo: Combo) {
-        toolTip = "\(combo.trigger) → \(combo.preview)"
-        triggerLabel.stringValue = combo.trigger
-        // Secondary, not tertiary: tertiary label on a window background measures about 2.3:1, under
-        // the 4.5:1 floor accessibility.md sets for text up to 17 pt.
-        triggerLabel.textColor = combo.enabled ? .labelColor : .secondaryLabelColor
-        previewLabel.stringValue = combo.preview
-        // Only the exception gets an icon. A filled circle on every row reads as a column of radio
-        // buttons and says nothing; a slash on the rows that will not fire says everything.
-        symbol.image = combo.enabled ? nil
-            : NSImage(systemSymbolName: "slash.circle", accessibilityDescription: "Disabled")
-        symbol.contentTintColor = .secondaryLabelColor
-    }
-
-    static func dequeue(from tableView: NSTableView) -> ComboRowView {
-        if let reused = tableView.makeView(withIdentifier: identifier, owner: nil) as? ComboRowView {
-            return reused
-        }
-        let cell = ComboRowView()
-        cell.identifier = identifier
-        return cell
-    }
-}
-
-extension Combo {
-    /// The literal text of the replacement, flattened for one line of a list. Placeholders keep their
-    /// names, because a combo that only works after you answer a question should say so in the list.
-    fileprivate var preview: String {
-        parts.reduce(into: "") { result, part in
-            switch part {
-            case .text(let value): result += value
-            case .placeholder(let placeholder): result += "[\(placeholder.id)]"
-            }
-        }.replacingOccurrences(of: "\n", with: "⏎")
     }
 }
 
