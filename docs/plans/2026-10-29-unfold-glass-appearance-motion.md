@@ -348,7 +348,6 @@ enum Theme {
         static let panePadding: CGFloat = 24
         static let captionColumn: CGFloat = 82
         static let gutter: CGFloat = 12
-        static let fieldGap: CGFloat = 16
     }
 
     enum Font {
@@ -356,7 +355,6 @@ enum Theme {
         /// caption size, and hierarchy is carried by weight against the 13 pt body rather than by a
         /// colour step, because secondary label measures 3.95:1 over a light window background.
         static let caption: NSFont = .systemFont(ofSize: 11)
-        static let captionEmphasised: NSFont = .systemFont(ofSize: 11, weight: .medium)
         static let body: NSFont = .systemFont(ofSize: 13)
         static let mono: NSFont = .monospacedSystemFont(ofSize: 13, weight: .regular)
         static let monoTrigger: NSFont = .monospacedSystemFont(ofSize: 12.5, weight: .medium)
