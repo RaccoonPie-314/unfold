@@ -18,9 +18,9 @@ enum Theme {
     }
 
     enum Font {
-        /// The platform floor for body text is 11 pt (`accessibility.md`); 11 is also the system's own
-        /// caption size, and hierarchy is carried by weight against the 13 pt body rather than by a
-        /// colour step, because secondary label measures 3.95:1 over a light window background.
+        /// The platform floor for body text is 11 pt; 11 is also the system's own caption size, and
+        /// hierarchy is carried by weight against the 13 pt body rather than by a colour step, because
+        /// secondary label measures 3.95:1 over a light window background.
         static let caption: NSFont = .systemFont(ofSize: 11)
         static let body: NSFont = .systemFont(ofSize: 13)
         static let mono: NSFont = .monospacedSystemFont(ofSize: 13, weight: .regular)
