@@ -712,6 +712,22 @@ Changed: `Sources/Unfold/AppShell/SidebarViewController.swift` (new),
   - `var triggerFieldFrameInWindow: CGRect?` -- the destination rect for `selectionMorph` in Task 11
   - `var triggerFieldProxy: NSView` -- the thin view Task 11 morphs instead of the real field
 
+- [ ] **Step 0: Carry the three follow-ups Task 3's review collected**
+
+These are Task 3's deferred minors, one line each, applied here because this task is already in the same
+two files:
+
+1. `SidebarViewController.searchText` and `focusList()` have no consumer anywhere in Plan 3 -- delete both
+   (Ruling N). Keep `listTableView`, `selectedRowFrame` and `shownIDs`, which Tasks 11 uses.
+2. `clearFilter()` gains a contract comment: it clears the field's text only; the caller owns
+   `MainWindowController.filter` and must reset it, because setting `stringValue` programmatically does
+   not fire `controlTextDidChange`.
+3. `MainWindowController`'s empty-state branch reads `sidebar.listTableView.numberOfRows == 0`, a view
+   internal. Replace with `var isEmptyList: Bool { visible.isEmpty }` on the pane.
+4. Before the pane closures are wired, call `sidebar.loadViewIfNeeded()` (and `editor.loadViewIfNeeded()`
+   for the pane added in this task). The current order works only because `assembleSplitView()` touches
+   `splitView.view` first; that is an AppKit internal, not a contract, and Task 5 rewrites that function.
+
 - [ ] **Step 1: Create the pane**
 
 Move `buildDetail`'s body into `loadView()`, `configure`/`caption` as private helpers, and
