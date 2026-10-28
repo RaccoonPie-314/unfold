@@ -268,7 +268,7 @@ the system renders the stock controls.
   - `func write(to defaults: UserDefaults = .standard)`
   - `var appearanceName: NSAppearance.Name?` (nil for `.system`) and `func apply()` which sets `NSApp.appearance`
   - `static let UserDefaults.unfoldAppearanceKey = "unfold.appearancePreference"`
-  - `enum Theme { static enum Radius { small, pill, card }; static enum Spacing { gutter, fieldGap, panePadding }; static enum Font { caption, body, mono } }`
+  - `enum Theme { enum Radius { card, pill }; enum Spacing { panePadding, captionColumn, gutter }; enum Font { caption, body, mono, monoTrigger } }` -- only tokens a later task reads (Ruling A: no `fieldGap`, no `captionEmphasised`, no `Radius.small`)
 - Consumed by: Tasks 3-7 for every radius/spacing/size, Task 12 for the toolbar control, `main.swift` for startup.
 
 - [ ] **Step 1: Write the failing tests**
@@ -283,10 +283,25 @@ import XCTest
 /// The preference is a decoded value, not a view: it must survive a garbage defaults entry by
 /// falling back to the system, because a stuck Dark mode is the failure the HIG warns about.
 final class ThemeTests: XCTestCase {
+    /// `UserDefaults(suiteName:)` persists on every `set`, so the domains are tracked and cleared in
+    /// `tearDown`. Clearing only at the start of the next test leaves the previous run's files in
+    /// `~/Library/Preferences` -- an artifact in the home folder that nobody asked for.
+    private var suites: [String] = []
+
     private func freshDefaults(_ suffix: String) -> UserDefaults {
-        let defaults = UserDefaults(suiteName: "ThemeTests.\(suffix)")!
-        defaults.removePersistentDomain(forName: "ThemeTests.\(suffix)")
+        let name = "UnfoldTests.Theme.\(suffix)"
+        suites.append(name)
+        let defaults = UserDefaults(suiteName: name)!
+        defaults.removePersistentDomain(forName: name)
         return defaults
+    }
+
+    override func tearDown() {
+        for name in suites {
+            UserDefaults(suiteName: name)?.removePersistentDomain(forName: name)
+        }
+        suites.removeAll()
+        super.tearDown()
     }
 
     func testMissingValueMeansMatchSystem() {
@@ -308,12 +323,33 @@ final class ThemeTests: XCTestCase {
         }
     }
 
-    func testOnlySystemLeavesTheAppAppearanceUnset() {
+    /// The on-disk contract, pinned as a literal. A round-trip test alone stays green if the key or a
+    /// raw value is renamed, and a renamed key silently breaks hand-edited defaults and the toolbar
+    /// control that writes it later.
+    func testPersistedContractIsPinned() {
+        XCTAssertEqual(UserDefaults.unfoldAppearanceKey, "unfold.appearancePreference")
+        XCTAssertEqual(AppearancePreference.allCases.map(\.rawValue), ["system", "light", "dark"],
+                       "Match System first, because it is the default the menu must keep reachable")
+    }
+
+    func testAppearanceNameMapping() {
         XCTAssertEqual(AppearancePreference.system.appearanceName, nil)
         XCTAssertEqual(AppearancePreference.light.appearanceName, .aqua)
         XCTAssertEqual(AppearancePreference.dark.appearanceName, .darkAqua)
         XCTAssertEqual(AppearancePreference.allCases.count, 3,
                        "Match System must stay reachable from the same control")
+    }
+
+    /// `apply()` is the only part of this type with a runtime effect, so it is asserted rather than
+    /// read. `NSApp` only exists once the shared application has been created.
+    func testApplyMovesTheAppAppearance() {
+        _ = NSApplication.shared
+        AppearancePreference.dark.apply()
+        XCTAssertEqual(NSApp.appearance?.name, .darkAqua)
+        AppearancePreference.light.apply()
+        XCTAssertEqual(NSApp.appearance?.name, .aqua)
+        AppearancePreference.system.apply()
+        XCTAssertNil(NSApp.appearance, "Match System must leave the app tracking the system")
     }
 }
 ```
@@ -351,9 +387,9 @@ enum Theme {
     }
 
     enum Font {
-        /// The platform floor for body text is 11 pt (`accessibility.md`); 11 is also the system's own
-        /// caption size, and hierarchy is carried by weight against the 13 pt body rather than by a
-        /// colour step, because secondary label measures 3.95:1 over a light window background.
+        /// The platform floor for body text is 11 pt; 11 is also the system's own caption size, and
+        /// hierarchy is carried by weight against the 13 pt body rather than by a colour step, because
+        /// secondary label measures 3.95:1 over a light window background.
         static let caption: NSFont = .systemFont(ofSize: 11)
         static let body: NSFont = .systemFont(ofSize: 13)
         static let mono: NSFont = .monospacedSystemFont(ofSize: 13, weight: .regular)
@@ -425,12 +461,16 @@ AppMenu.install()
 cd "$REPO_ROOT"
 swift test --filter ThemeTests 2>&1 | grep -E "Executed|failures"
 swift build 2>&1 | tail -2
-defaults write io.github.raccoonpie314.unfold unfoldAppearanceKey -string dark
+ls ~/Library/Preferences | grep -c "^UnfoldTests\\.Theme\\." 
 ```
-Expected: ThemeTests green, build complete. The `defaults write` targets the installed bundle's domain;
-the live check that the app opens dark happens in Task 12's capture pass, once the toolbar control
-exists to change it back. Record that the key was written, so it can be cleared with
-`defaults delete io.github.raccoonpie314.unfold unfoldAppearanceKey` after testing.
+Expected: ThemeTests green (6 methods), build complete, and **`0`** -- the run must leave no preference
+domain behind. If it prints a non-zero count, that is a leak: `defaults delete` each named domain,
+remove the file, and say so in the note; the `tearDown` above is what is supposed to prevent it.
+
+Do **not** write to `io.github.raccoonpie314.unfold`. That lives in the shipped app's real
+environment, and the app has no UI to change it back until Task 12. When Task 12 needs it, the key is
+`unfold.appearancePreference` -- the Swift property name `unfoldAppearanceKey` is not the persisted string
+and writing it would produce a false negative.
 
 - [ ] **Step 6: Stop for review**
 
