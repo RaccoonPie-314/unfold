@@ -46,9 +46,11 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
         return window.convertToScreen(triggerField.convert(triggerField.bounds, to: nil))
     }
 
-    /// A 1 pt separator-coloured line laid exactly over the trigger field. Task 11 morphs this rather
-    /// than the field itself: re-laying out a real control mid-animation is what moved the caret the
-    /// last time a morph touched something the user was typing into.
+    /// A 1 pt separator-coloured line laid exactly over the trigger field, **hidden until the morph
+    /// needs it**. Task 11 morphs this rather than the field itself: re-laying out a real control
+    /// mid-animation is what moved the caret the last time a morph touched something the user was
+    /// typing into. It draws nothing while hidden, and its `hitTest` returns nil so it can never eat a
+    /// click.
     var triggerFieldProxy: NSView { triggerProxy }
 
     // MARK: - Construction
@@ -93,8 +95,12 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
             $0.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview($0)
         }
-        // Above the field it mirrors, so it draws on top of it -- and hit-tests through to it.
+        // Above the field it mirrors, so it draws on top of it -- and hit-tests through to it. Hidden
+        // until Task 11's shared-element morph unhides it: nothing before that task has any business
+        // drawing a line through the middle of the user's trigger text. The constraints stay, because
+        // Task 11 reads this geometry through `triggerFieldFrameInWindow`/`triggerFieldProxy`.
         triggerProxy.translatesAutoresizingMaskIntoConstraints = false
+        triggerProxy.isHidden = true
         container.addSubview(triggerProxy)
 
         let guide = container.safeAreaLayoutGuide
@@ -218,10 +224,20 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
         editorHint.textColor = failure ? .systemRed : .secondaryLabelColor
     }
 
-    /// The store file this editor's content lives in. The window owns the path; the pane renders it.
-    func showPath(short: String, toolTip: String) {
+    /// The full store path, shown as this label's tooltip. The window owns the path; the pane renders
+    /// it. Set **once** at wiring time -- `store.url` never changes -- and deliberately not from the
+    /// per-second `refreshStatus()`: re-assigning `toolTip:` on a view whose tooltip is currently open
+    /// dismisses it and starts it again, so the user could never finish reading it.
+    func setPathTooltip(_ path: String) {
+        pathLabel.toolTip = path
+    }
+
+    /// The `~`-shortened store path on the label -- what `refreshStatus()` updates every second. Written
+    /// only when the text actually changed, so the timer does not force a display pass on a label whose
+    /// path is the same as it was a second ago. The full path stays in the tooltip.
+    func showPath(short: String) {
+        guard pathLabel.stringValue != short else { return }
         pathLabel.stringValue = short
-        pathLabel.toolTip = toolTip
     }
 
     // MARK: - Focus
@@ -269,11 +285,13 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
 
 /// The proxy the Task 11 morph animates in place of the trigger field. It draws a semantic separator
 /// line (so it re-resolves on appearance change), and hit-tests to nil so the real field underneath
-/// stays clickable.
+/// stays clickable. It is created hidden -- Task 11 is the only thing that shows it -- and draws nothing
+/// while hidden, so a line that is standing by can never paint over the trigger text.
 private final class ProxyLineView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
     override func draw(_ dirtyRect: NSRect) {
+        guard !isHidden else { return }
         NSColor.separatorColor.setFill()
         dirtyRect.fill()
     }

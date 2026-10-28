@@ -128,6 +128,10 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
             }
         }
 
+        // One-shot, because `store.url` is a `let` and a tooltip the user is reading must not be
+        // rewritten by the status timer. `refreshStatus()` updates only the shortened label.
+        editor.setPathTooltip(store.url.path)
+
         // The list, not the filter: an accidental keystroke should move the selection, not quietly
         // narrow the library to nothing.
         window.initialFirstResponder = sidebar.listTableView
@@ -535,7 +539,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         pauseItem?.image = NSImage(systemSymbolName: coordinator.isPaused ? "play.fill" : "pause.fill",
                                    accessibilityDescription: coordinator.isPaused ? "Resume" : "Pause")
         pauseItem?.label = coordinator.isPaused ? "Resume" : "Pause"
-        editor.showPath(short: shortPath(), toolTip: store.url.path)
+        editor.showPath(short: shortPath())
         diagnosticsSummary.stringValue =
             "Keystrokes seen \(coordinator.keystrokesSeen)\n"
             + "Tap switched off by macOS \(coordinator.tapDisableObservations)×\n"
