@@ -787,7 +787,10 @@ editor.onEdit = { [weak self] edit in
             let parts = try Template.parse(text)
             self.mutate { $0.parts = parts }
             self.reloadRows()
-            if let combo = self.selected() { self.redisplay() }
+            // Deliberately not `redisplay()`: writing `replacementView.string` back under a caret that
+            // is mid-word moves the caret to the end. The hint may refresh -- the pane's own
+            // `showHint` is the only view it touches.
+            if let combo = self.selected() { self.editor.showHint(self.hint(for: combo), failure: false) }
         } catch {
             self.editor.showHint("Not saved -- \(error)", failure: true)
         }
@@ -826,6 +829,12 @@ func beginTryEdit() {
 }
 ```
 
+`pathLabel` moves into the pane, and because `store` does not, the pane needs a setter. Split it so the
+per-second `refreshStatus()` cannot disturb a tooltip the user is reading: a one-shot
+`setPathTooltip(_:)` called from `loadView`-time wiring with `store.url.path`, and
+`showPath(short:)` for the `~`-shortened text that `refreshStatus` updates every second -- the latter
+writing only when the string actually changed.
+
 `addCombo`'s final two lines become `editor.beginTriggerEdit()`, and the sidebar's double-click path
 becomes `sidebar.onRequestEdit = { [weak self] in self?.editor.beginTriggerEdit() }` -- the closure that
 called the controller's own `editTriggerFromList()` in Task 3, whose method is deleted here.
@@ -839,9 +848,10 @@ var triggerFieldFrameInWindow: CGRect? {
     return window.convertToScreen(triggerField.convert(triggerField.bounds, to: nil))
 }
 
-/// A 1 pt separator-coloured line laid exactly over the trigger field. Task 11 morphs this rather than
-/// the field itself: re-laying out a real control mid-animation is what moved the caret the last time a
-/// morph touched something the user was typing into.
+/// A 1 pt separator-coloured line laid exactly over the trigger field, **hidden until the morph needs
+/// it**. Task 11 morphs this rather than the field itself: re-laying out a real control mid-animation is
+/// what moved the caret the last time a morph touched something the user was typing into. It draws
+/// nothing while hidden, and its `hitTest` returns nil so it can never eat a click.
 var triggerFieldProxy: NSView { triggerProxy }
 ```
 
