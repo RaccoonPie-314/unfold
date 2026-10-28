@@ -18,7 +18,10 @@ Every task's requirements implicitly include this section.
 - No third-party dependencies.
 - **Plan 3 touches nothing in `Sources/UnfoldEngine/` or `Sources/UnfoldMac/`.** `UnfoldEngine` stays
   Foundation-only; the keyboard layer keeps its document-verified behaviour untouched.
-- No `#available(macOS ...)` anywhere in `Sources/Unfold/` after Task 1. Verified by grep.
+- Exactly one `#available` guard may exist in `Sources/Unfold/` after Task 1, and it is the one on
+  `effectIsInteractive`: the SDK marks that property `API_AVAILABLE(macos(27.0))`
+  (`NSGlassEffectView.h:45`) while the floor is 26. Every macOS 26 *fallback* branch is deleted.
+  Verified by grep, and Ruling F covers it.
 - No hand-drawn glass, blur or vibrancy. No `tintColor` on any glass surface. Glass appears only in
   the functional layer: never behind list rows, editor fields or the counters block.
 - No hard-coded RGB. Colors come from semantic `NSColor` only. No asset catalog -- `swift build` has no
@@ -39,9 +42,12 @@ Every task's requirements implicitly include this section.
   at the end of every task; the self-test buttons hold a reference to the "Try it" text view, whose
   owner changes in Task 4.
 - Commit messages: plain imperative sentences, no `feat:` prefixes.
-- **Do not run `git commit`, `git tag` or `git push`.** UI work is validated by hand and Git is
-  driven by hand; that standing instruction overrides the usual per-task commit step. Each task's
-  final step is therefore "list the changed files and stop for review". Nothing in this plan may push.
+- **Git -- this bullet supersedes every per-task "Stop for review ... no commit" step below.** On
+  2026-10-29 one local commit per task was authorised on the current branch
+  (`task/unfold-keyboard-layer`), so each task's final step is: run its verification, `git add` only the
+  files that task changed, commit once, then stop for review. Commit messages are plain imperative sentences with
+  no `feat:` prefix and no trailer. **Never** `git push`, `git tag`, `git commit --amend`, `git stash`, or
+  `git checkout -- <path>`; never stage a file the task did not change. Pushing happens outside the plan.
 - The project path contains a space: `"$REPO_ROOT"`. Quote it
   in every command.
 - Baseline before starting, measured 2026-10-29: **186 test methods, 0 failures**, across three targets
@@ -80,14 +86,15 @@ Modified: `Package.swift`, `Resources/Info.plist`, `Sources/Unfold/main.swift`,
 `docs/specs/2026-10-23-macos-text-expander-design.md`.
 
 Deleted content: `Glass.wrap`'s `tint` parameter, `MainWindowController.vstack` (unused), the
-deprecated `selectionHighlightStyle = .sourceList` assignment, and every `#available` branch in the
-shell.
+deprecated `selectionHighlightStyle = .sourceList` assignment, and every macOS 26 *fallback*
+`#available` branch in the shell. One guard remains by necessity: `effectIsInteractive` is
+`API_AVAILABLE(macos(27.0))` against a 26 floor.
 
 ## Task map
 
 | # | Task | Ends with |
 |---|---|---|
-| 1 | Floor bump, fallback deletion, product-spec corrections | `minos 26.0`, no `#available`, 186 green |
+| 1 | Floor bump, fallback deletion, product-spec corrections | `minos 26.0`, one 27.0 guard, 186 green |
 | 2 | Theme tokens + `AppearancePreference` + startup application | persisted override changes the running app |
 | 3 | Extract `SidebarViewController` | list behaves identically, in its own file |
 | 4 | Extract `EditorViewController` | editor behaves identically; `+`/delete still land |
@@ -150,8 +157,9 @@ In `Resources/Info.plist`, replace the `LSMinimumSystemVersion` value `14.0` wit
 
 - [ ] **Step 4: Delete the availability branches and the unused tint parameter**
 
-`Sources/Unfold/AppShell/Glass.swift` becomes exactly this (the `guard #available` wrappers, the
-`#available(macOS 27.0)` guard and the `tint` parameter are gone):
+`Sources/Unfold/AppShell/Glass.swift` becomes exactly this (the `guard #available(macOS 26.0)` wrapper
+and the `tint` parameter are gone; the 27.0 guard on `effectIsInteractive` is the one that remains,
+because the floor is 26 and that property arrived in 27):
 
 ```swift
 import AppKit
@@ -174,7 +182,10 @@ enum Glass {
         let glass = NSGlassEffectView()
         glass.style = .regular
         glass.cornerRadius = cornerRadius
-        glass.effectIsInteractive = interactive
+        // The only availability check the shell keeps. The floor is macOS 26 and this property arrived
+        // in 27, so below 27 the glass stays static -- its documented default -- rather than the call
+        // being faked with a hand-made hover.
+        if #available(macOS 27.0, *) { glass.effectIsInteractive = interactive }
         content.translatesAutoresizingMaskIntoConstraints = false
         glass.contentView = content
         NSLayoutConstraint.activate([
@@ -213,21 +224,33 @@ keystroke-tap verification uses. The platform floor is macOS 26 (Plan 3), so the
 Sonoma or Sequoia.
 ```
 
-- [ ] **Step 6: Verify no availability branch survives and the suite is still green**
+- [ ] **Step 6: Verify the single surviving guard and the unchanged suite**
 
 ```bash
 cd "$REPO_ROOT"
-grep -rn "#available" Sources/Unfold/ || echo "no availability guards left"
+grep -rn "#available" Sources/Unfold/
+[ "$(grep -rn '#available' Sources/Unfold/ | wc -l | tr -d ' ')" = "1" ] \
+  && grep -q 'macOS 27.0' Sources/Unfold/AppShell/Glass.swift && echo "one guard, on effectIsInteractive"
 grep -c "UIDesignRequiresCompatibility" Resources/Info.plist | grep -q "^0$" && echo "compat key absent"
 swift test 2>&1 | grep -E "Test Suite 'All tests' failed|with [1-9][0-9]* failures" || echo GREEN
+swift test --list-tests 2>/dev/null | grep -c /
 ```
-Expected: `no availability guards left`, `compat key absent`, `GREEN`.
+Expected: the only `#available` line in `Sources/Unfold/` is the `macOS 27.0` guard on
+`effectIsInteractive` -- that guard is required, because the floor is 26 and the property arrived in 27
+(`NSGlassEffectView.h:45`); `one guard, on effectIsInteractive`; `compat key absent`; `GREEN`; `186`.
 
-- [ ] **Step 7: Stop for review**
+- [ ] **Step 7: Commit, then stop for review**
 
-List the changed files. Do not commit. The bundle is rebuilt by hand (`Scripts/install-local.sh`)
-and the window checked against how it looked before, since a floor bump can change how the system
-renders the stock controls.
+```bash
+cd "$REPO_ROOT"
+git add Package.swift Resources/Info.plist Sources/Unfold/AppShell/Glass.swift \
+        docs/specs/2026-10-23-macos-text-expander-design.md
+git commit -m "Require macOS 26 and delete the pre-glass fallbacks"
+git show --stat --oneline HEAD
+```
+Then list the changed files and the check output. Do not push. The bundle is rebuilt by hand
+(`Scripts/install-local.sh`) and the window checked against how it looked before, since a floor bump changes how
+the system renders the stock controls.
 
 ---
 
@@ -905,9 +928,10 @@ extension Glass {
 
 Diagnostics: `Glass.container(Glass.wrap(column, cornerRadius: Theme.Radius.card, padding: 8))`.
 Status pill: `item.view = Glass.container(Glass.wrap(stack, cornerRadius: Theme.Radius.pill, padding: 6))`.
-Both already pass `interactive: true` through the default; verify by reading the call site that
-`effectIsInteractive` is on, because that is what supplies Apple's own press response and it defaults
-to off.
+Both call sites pass `interactive: true` by default. Read the call site to confirm it is not set to
+`false` -- the property defaults off, and the press response exists only because we turn it on. Note the
+floor: on macOS 26 the guard cannot fire, so the glass is legitimately static there; this machine is 27,
+so the response must be visible in the screenshots, and its absence is a bug rather than an OS version.
 
 - [ ] **Step 3: Restore the scroll edge effect and fix the search field the honest way**
 
@@ -1983,7 +2007,7 @@ spec in the same commit and say what changed.
 cd "$REPO_ROOT"
 swift build
 swift test
-grep -rn "#available" Sources/Unfold/ || echo "no guards"
+grep -rn "#available" Sources/Unfold/ | grep -v "macOS 27.0" || echo "no fallback guards"
 grep -rn "tintColor\|UIDesignRequiresCompatibility" Sources/Unfold/ Resources/Info.plist || echo "no tint, no compat key"
 vtool -show-build .build/debug/Unfold | grep minos
 grep -rn "^import " Sources/UnfoldEngine/ | grep -v Foundation || echo "engine still Foundation-only"
@@ -1996,7 +2020,7 @@ because every one of them is how the keyboard layer proves itself.
 - [ ] **Step 7: Stop for review**
 
 List changed files, the final test total, the measured motion log, the screenshot set in both
-appearances, and any spec correction. No commit, no push.
+appearances, and any spec correction. Commit this task once, then stop for review. Never push -- that is a manual step.
 
 ## Corrections found while planning
 
