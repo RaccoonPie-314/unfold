@@ -88,6 +88,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
+// Before any window exists: the appearance must be decided for the first frame, not corrected after
+// the window has already drawn once in the wrong one.
+AppearancePreference.read().apply()
 // Before any window exists: the app's own text fields resolve ⌘V and ⌘A through this menu.
 AppMenu.install()
 launchLog("activationPolicy=\(app.activationPolicy().rawValue) (0=regular 1=accessory 2=prohibited)")
