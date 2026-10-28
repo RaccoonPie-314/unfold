@@ -632,11 +632,21 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSTable
         // letting the user add a combo that appears not to have been added.
         filter = ""
         searchField.stringValue = ""
-        let combo = Combo(id: UUID(), trigger: "new", label: "new", enabled: true,
-                          parts: [.text("")], insertion: .paste)
+        let previousID = selectedID
+        // No replacement is `parts: []`, not `.text("")`: the plain-text form drops an empty part, so
+        // the store refuses to write one. An empty label takes the trigger as its name on the first
+        // edit, which is what `mutate` already does for a name nobody has typed.
+        let combo = Combo(id: UUID(), trigger: "new", label: "", enabled: true,
+                          parts: [], insertion: .paste)
         file.combos.append(combo)
         selectedID = combo.id
-        guard apply() else { return }
+        // A combo that never reached the file must not stay in memory either: it is the one thing every
+        // later save validates against, so keeping it would make the whole library unsavable.
+        guard apply() else {
+            file.combos.removeAll { $0.id == combo.id }
+            selectedID = previousID
+            return
+        }
         reloadRows()
         if let row = visible.firstIndex(where: { $0.id == combo.id }) {
             tableView.scrollRowToVisible(row)
@@ -655,9 +665,16 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSTable
         alert.addButton(withTitle: "Cancel")
         alert.beginSheetModal(for: window!) { [weak self] response in
             guard response == .alertFirstButtonReturn, let self else { return }
+            let before = self.file.combos
+            let previousID = self.selectedID
             self.file.combos.removeAll { $0.id == combo.id }
             self.selectedID = nil
-            guard self.apply() else { return }
+            // A refused write has to put the row back, or the list shows a library the file does not
+            // have and the deleted combo returns on the next launch.
+            if !self.apply() {
+                self.file.combos = before
+                self.selectedID = previousID
+            }
             self.reloadRows()
             self.loadEditor()
         }

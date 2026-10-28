@@ -131,6 +131,26 @@ final class StoreTests: XCTestCase {
         )
     }
 
+    // The + button hands the library a combo with no replacement yet, and `[]` is the only way to say
+    // that: `.text("")` is refused by `testSaveRefusesPartsThePlainTextFormWouldSilentlyRewrite`'s
+    // rule, and a refused save there stops the whole file from writing -- including later deletions.
+    func testSaveAcceptsAComboWithNoReplacementYet() throws {
+        let fresh = Combo(
+            id: UUID(uuidString: "6C9C0A1E-2D2B-4E37-9A6B-5C1F0D8E3A11")!,
+            trigger: "new",
+            label: "",
+            enabled: true,
+            parts: [],
+            insertion: .paste
+        )
+
+        try store().save(CombosFile(formatVersion: 1, combos: [fresh]))
+
+        let loaded = try store().load()
+        XCTAssertEqual(loaded.combos, [fresh])
+        XCTAssertEqual(Template.serialize(loaded.combos[0].parts), "")
+    }
+
     func testDefaultURLPointsAtTheDocumentedPath() {
         let url = Store.defaultURL()
         XCTAssertTrue(url.path.hasSuffix("io.github.raccoonpie314.unfold/combos.json"), url.path)
