@@ -33,9 +33,11 @@ therefore share the UI and the engine while still carrying two native shims. For
 trigger→replacement engine, that shared UI is the only part worth sharing, and it is not worth
 the webview runtime or the C++ iteration loop.
 
-Build environment constraint: this machine has Command Line Tools only, no Xcode.app, so
-`xcodebuild` is unavailable. The project is a SwiftPM package and the `.app` bundle is assembled
-by `Scripts/make-app-bundle.sh`.
+Build environment: Xcode is installed (`/Applications/Xcode.app`, SDK 27.0), corrected 2026-10-29 --
+the original draft recorded Command Line Tools only. The project is still a SwiftPM package and the
+`.app` bundle is still assembled by `Scripts/make-app-bundle.sh`, because that path is what the
+keystroke-tap verification uses. The platform floor is macOS 26 (Plan 3), so the app does not run on
+Sonoma or Sequoia.
 
 ## Architecture
 
