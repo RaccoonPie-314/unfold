@@ -283,13 +283,20 @@ import XCTest
 /// The preference is a decoded value, not a view: it must survive a garbage defaults entry by
 /// falling back to the system, because a stuck Dark mode is the failure the HIG warns about.
 final class ThemeTests: XCTestCase {
-    /// `UserDefaults(suiteName:)` persists on every `set`, so the domains are tracked and cleared in
-    /// `tearDown`. Clearing only at the start of the next test leaves the previous run's files in
-    /// `~/Library/Preferences` -- an artifact in the home folder that nobody asked for.
+    /// `UserDefaults(suiteName:)` persists on every `set`, so the domains it creates are tracked and
+    /// cleared in `tearDown`. Clearing turns out not to be sufficient on its own: a *named* suite writes
+    /// `~/Library/Preferences/<suite>.plist`, and cfprefsd re-creates that file after the test process
+    /// exits even when `removePersistentDomain` has run -- the run leaked four empty plists every time.
+    /// A suite name that is an absolute path keeps the same genuinely-persistent domain under a per-run
+    /// temp directory, so the real preferences folder is never written and a value written by one
+    /// process is still read back by another.
+    private let runDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("UnfoldTests.Theme.\(UUID().uuidString)")
     private var suites: [String] = []
 
     private func freshDefaults(_ suffix: String) -> UserDefaults {
-        let name = "UnfoldTests.Theme.\(suffix)"
+        try? FileManager.default.createDirectory(at: runDirectory, withIntermediateDirectories: true)
+        let name = runDirectory.appendingPathComponent("UnfoldTests.Theme.\(suffix)").path
         suites.append(name)
         let defaults = UserDefaults(suiteName: name)!
         defaults.removePersistentDomain(forName: name)
@@ -301,6 +308,7 @@ final class ThemeTests: XCTestCase {
             UserDefaults(suiteName: name)?.removePersistentDomain(forName: name)
         }
         suites.removeAll()
+        try? FileManager.default.removeItem(at: runDirectory)
         super.tearDown()
     }
 
