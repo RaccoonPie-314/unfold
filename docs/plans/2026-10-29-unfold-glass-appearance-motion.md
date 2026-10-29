@@ -1423,6 +1423,20 @@ mode on the installed build -- the hierarchy should still be obvious at 11 pt ag
 > 5. Name the lookup `lookup(_:)` everywhere, including the Interfaces line, since Tasks 10 and 11 call it.
 > 6. One line of doc on the seam: durations and curve parameters are `Double`, geometry is `CGFloat`, and
 >    the driver (Task 10) owns the conversion.
+> 7. **Item 2's ceiling is corrected by Ruling AA: `0.6`, not `0.5`** -- and three more numbers in this
+>    amendment were wrong when written, all caught by the pass rather than bent:
+>    - sampled progress at an absolute 45 ms is **53.4%** for `selectionMorph` (0.20 s) and **57.7%** for
+>      `promptDismiss` (0.18 s) on the *approved* curves, because a fixed time is a bigger fraction of a
+>      shorter transition; the curve that actually failed sat at **64.7-76.5%**. So the net has ~7 points of
+>      separation and the per-id exactness table in item 1 is the primary guard -- say that in the comment.
+>    - the x-axis case's expected `translation.width` is **−115**, not −70 (`midX 135 − 250`), which the
+>      shipped test already carries.
+>    - `String(describing:)` on `.positionCrossfade` **contains** the substring "fade", so item 3's
+>      `contains("fade")` fails three legitimate cases; compare with `== "fade"` instead, as shipped.
+>    - the prescribed mutation "`y1` → 0.2" *slows* the curve (49.7% → ~19%) and cannot fail a
+>      too-fast-progress guard. The mutation that proves the guard is a front-loaded
+>      `.easeOut(0.30, 1, 0.32, 1)`, which measures 62% at 45 ms.
+>    - `expected[t.id]` on a dictionary is optional, so the table needed `guard let` to compile.
 
 
 **Files:**
