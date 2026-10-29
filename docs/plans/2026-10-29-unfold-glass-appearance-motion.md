@@ -888,6 +888,19 @@ place instead of spawning a card; `+` then type immediately; delete; run `Self-t
   - `var summary: String { get set }` and `var testResult: String { get set }`
   - `var containerForMotionProbe: NSView` -- the view Task 10 animates to prove motion is geometric
 
+- [ ] **Step 0: Carry what Tasks 3 and 4 left for this one**
+
+1. Delete `vstack(_:spacing:)` -- dead private code, still in `MainWindowController`, on this task's
+   removal list.
+2. Keep `editor.setPathTooltip(store.url.path)` ahead of the first `refreshStatus()` call. It is the only
+   thing that puts the full path in the tooltip, and `refreshStatus()` now never sets it.
+3. Add the one regression test Task 4's fix round should have had: after `loadViewIfNeeded()`, assert
+   `editor.triggerFieldProxy.isHidden` is true and that the proxy `isDescendant(of: editor.view)`. It is
+   reachable through the existing `@testable import Unfold` target with no window and no app launch, and it
+   fails for exactly the defect that review found. This raises the suite from 192 to 193; the count is a
+   floor to add to, never a cap.
+4. Wire `diagnostics.loadViewIfNeeded()` alongside the sidebar's and editor's, before any assignment to it.
+
 - [ ] **Step 1: Move the pane**
 
 `buildDiagnostics`' body becomes `loadView()`. The buttons keep targeting the window controller, and
@@ -1856,7 +1869,14 @@ sidebar.onSelect = { [weak self] id in
     guard let self else { return }
     if let morph = MotionPlan.lookup(.selectionMorph), let from = self.sidebar.selectedRowFrame {
         let to = self.editor.triggerFieldFrameInWindow
-        if let to, to != from { Motion.morph(self.editor.triggerFieldProxy, source: from, transition: morph) }
+        if let to, to != from {
+            // The proxy ships hidden (Task 4 round 1): it exists to be morphed, and drawing it any
+            // other time would put a line through the user's trigger text.
+            self.editor.triggerFieldProxy.isHidden = false
+            Motion.morph(self.editor.triggerFieldProxy, source: from, transition: morph) {
+                self.editor.triggerFieldProxy.isHidden = true
+            }
+        }
     }
     self.selectedID = id
     self.redisplay()
