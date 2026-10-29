@@ -8,10 +8,13 @@ import AppKit
 /// that was carrying hierarchy was carrying it below legibility. Hierarchy now comes from 11 pt
 /// against 13 pt and weight against weight (`typography.md`, `color.md`).
 ///
-/// A pair's backing is the *opaque* material base, which is the honest approximation for content-layer
-/// text. Text on glass samples whatever is behind the window and cannot be computed here; the pill is
-/// covered by a screenshot pass in Task 12 instead, and its label is monochrome `labelColor` for the
-/// same reason.
+/// A pair's backing is the *opaque* material base, and that makes every row here a **best case**: the
+/// equivalent of full reduce-transparency, never the surface the app actually renders. The window roots
+/// itself in `Glass.windowBackground()` -- an `NSVisualEffectView` with `blendingMode = .behindWindow` on
+/// a non-opaque window -- so the desktop reads through the panes and *all* of this text, the pill included,
+/// samples colours this table cannot see; the inactive-window material swap is unmodelled here too. The
+/// numbers stay because they are the ceiling worth measuring, but the real ratios for the pane text, not
+/// only the pill, belong to Task 12's capture pass.
 struct ContrastPair {
     let element: String
     let text: NSColor
@@ -29,6 +32,7 @@ enum Contrast {
         .init(element: "editor.hint", text: .labelColor, backing: .windowBackgroundColor, floor: 4.5),
         .init(element: "diagnostics.summary", text: .labelColor, backing: .windowBackgroundColor, floor: 4.5),
         .init(element: "diagnostics.result", text: .labelColor, backing: .windowBackgroundColor, floor: 4.5),
+        .init(element: "diagnostics.section", text: .labelColor, backing: .windowBackgroundColor, floor: 4.5),
         .init(element: "editor.path", text: .labelColor, backing: .windowBackgroundColor, floor: 4.5),
         .init(element: "row.trigger", text: .labelColor, backing: .windowBackgroundColor, floor: 4.5),
         .init(element: "row.preview", text: .labelColor, backing: .windowBackgroundColor, floor: 4.5),
@@ -38,25 +42,49 @@ enum Contrast {
         // systemGreen is 2.22:1 and systemOrange 2.31:1 in Light. Task 12 therefore renders the
         // working and paused states in `labelColor` and colours only the broken ones.
         .init(element: "pill.statusSymbol", text: .systemRed, backing: .windowBackgroundColor, floor: 3.0),
+        // 3.0 and not 4.5: a glyph beside a sentence that already states the fact is decorative for
+        // contrast purposes (WCAG 1.4.11), so it holds the graphic floor. `showHint`'s failure triangle.
+        .init(element: "editor.hintSymbol", text: .systemRed, backing: .windowBackgroundColor, floor: 3.0),
         // The one place contrast is deliberately lowered: "disabled" is the message, and the slash
         // symbol plus the tooltip say it without colour.
         .init(element: "row.triggerDisabled", text: .secondaryLabelColor,
               backing: .windowBackgroundColor, floor: 3.0),
+        // 3.0 and not 4.5: the slash says what the trigger label's own dimming and the row tooltip
+        // already say, so it is measured as a graphic, not as text. `ComboRowView`'s disabled symbol.
+        .init(element: "row.disabledSymbol", text: .secondaryLabelColor,
+              backing: .windowBackgroundColor, floor: 3.0),
     ]
+
+    /// Returned when no measurement exists: an unresolvable appearance, a colour that will not convert
+    /// to sRGB, or a translucent backing. It is not a ratio, and `failures(in:)` never prints it as one.
+    static let cannotMeasure = -1.0
 
     static func ratio(foreground: NSColor, background: NSColor,
                       appearance: NSAppearance.Name) -> Double {
         guard let named = NSAppearance(named: appearance),
               let f = resolve(foreground, in: named), let b = resolve(background, in: named) else {
-            return -1
+            return cannotMeasure
         }
+        // A translucent backing is refused rather than composited: `composite` has nothing behind the
+        // backing to blend toward, so it would silently treat the backing as its own dim colour and
+        // overstate the ratio. Every declared backing is opaque today -- `windowBackgroundColor` measures
+        // a = 1.0000 in both appearances -- so a translucent one means a new row pointed at a material
+        // base this table cannot certify, which is a bug in the table. The sentinel says so out loud.
+        guard b.a == 1 else { return cannotMeasure }
         let l1 = luminance(composite(f, b)), l2 = luminance((b.r, b.g, b.b))
         return (max(l1, l2) + 0.05) / (min(l1, l2) + 0.05)
     }
 
     static func failures(in appearance: NSAppearance.Name) -> [String] {
-        pairs.filter { ratio(foreground: $0.text, background: $0.backing, appearance: appearance) < $0.floor }
-             .map { "\($0.element) = \(String(format: "%.2f", ratio(foreground: $0.text, background: $0.backing, appearance: appearance))):1 under \($0.floor)" }
+        pairs.compactMap { pair in
+            let measured = ratio(foreground: pair.text, background: pair.backing, appearance: appearance)
+            // A broken gauge must not look like a pair that failed, or like one that passed at -1.00:1.
+            if measured == cannotMeasure {
+                return "\(pair.element): measurement failed — the instrument broke, not the colour"
+            }
+            guard measured < pair.floor else { return nil }
+            return "\(pair.element) = \(String(format: "%.2f", measured)):1 under \(pair.floor)"
+        }
     }
 
     /// A semantic color must be resolved *inside* the appearance it is being measured against, or

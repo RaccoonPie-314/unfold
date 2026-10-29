@@ -80,6 +80,18 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
         editorHint.maximumNumberOfLines = 2
         editorHint.setContentHuggingPriority(.defaultLow, for: .vertical)
 
+        // The glyph is drawn at the caption's own point size, not at the symbol's natural ~17 pt, so a
+        // failure triangle cannot tower over the 11 pt sentence next to it. `imageScaling` matters for
+        // the same reason: an `NSImageView` with `image == nil` has no intrinsic size at all, which made
+        // the gap in front of the hint a free variable.
+        hintSymbol.imageScaling = .scaleProportionallyUpOrDown
+        hintSymbol.symbolConfiguration = NSImage.SymbolConfiguration(
+            pointSize: Theme.Font.caption.pointSize, weight: .regular)
+        // VoiceOver reads the sentence, not the glyph: the text already says the thing, and the image's
+        // hard-coded "Not saved" description would contradict hints that say "Could not save -- ...". The
+        // description stays (it travels with the symbol image) but never becomes the a11y label.
+        hintSymbol.setAccessibilityElement(false)
+
         configure(tryView, in: tryScroll, monospaced: false)
 
         pathLabel.font = Theme.Font.caption
@@ -119,7 +131,14 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
             tryCaption.trailingAnchor.constraint(equalTo: guide.leadingAnchor, constant: captionColumn),
 
             triggerField.leadingAnchor.constraint(equalTo: guide.leadingAnchor, constant: controlColumn),
+            // The hint's glyph column is a fixed 12 pt wide and always there, hidden or not, so the
+            // sentence is indented by 12 + its 6 pt spacing in both states. That trades column alignment
+            // with the fields above and below -- the hint no longer starts on `controlColumn` -- for
+            // geometry that does not move: sizing the column to the image would slide the whole line
+            // sideways every time a save was refused and then allowed.
             hintSymbol.leadingAnchor.constraint(equalTo: guide.leadingAnchor, constant: controlColumn),
+            hintSymbol.widthAnchor.constraint(equalToConstant: 12),
+            hintSymbol.heightAnchor.constraint(equalToConstant: 12),
             hintSymbol.centerYAnchor.constraint(equalTo: editorHint.centerYAnchor),
             editorHint.leadingAnchor.constraint(equalTo: hintSymbol.trailingAnchor, constant: 6),
             replacementScroll.leadingAnchor.constraint(equalTo: guide.leadingAnchor, constant: controlColumn),

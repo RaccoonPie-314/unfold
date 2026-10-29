@@ -29,10 +29,35 @@ final class ContrastTests: XCTestCase {
                                       appearance: .aqua), 2.220, accuracy: 0.02)
     }
 
+    /// Drift guard for the instrument itself, with no literals in it. Composite the alpha away and
+    /// `secondaryLabelColor` measures 21:1 -- the same as `labelColor` -- and every other test in this
+    /// file still passes, including the floor sweep. So: secondary must be *strictly dimmer* than label.
+    func testSecondaryLabelIsStrictlyDimmerThanLabelInLight() {
+        let secondary = Contrast.ratio(foreground: .secondaryLabelColor,
+                                       background: .windowBackgroundColor, appearance: .aqua)
+        let primary = Contrast.ratio(foreground: .labelColor,
+                                     background: .windowBackgroundColor, appearance: .aqua)
+        XCTAssertLessThan(secondary, primary,
+                          "secondary \(secondary) vs label \(primary): equal means the alpha was ignored")
+    }
+
+    /// And the other way the gauge can break silently: drop the `appearance:` argument and both
+    /// appearances report the same number, which the fixed literals above could not catch if the system
+    /// shipped one value for both. The two must differ by more than measurement noise.
+    func testSecondaryLabelRatioDiffersBetweenTheTwoAppearances() {
+        let light = Contrast.ratio(foreground: .secondaryLabelColor,
+                                   background: .windowBackgroundColor, appearance: .aqua)
+        let dark = Contrast.ratio(foreground: .secondaryLabelColor,
+                                  background: .windowBackgroundColor, appearance: .darkAqua)
+        XCTAssertNotEqual(light, dark, accuracy: 0.5,
+                          "light \(light) vs dark \(dark): the same number means appearance was ignored")
+    }
+
     func testTableCoversEveryLabelInTheShell() {
         for element in ["caption.trigger", "caption.replacement", "caption.try", "editor.hint",
-                        "diagnostics.summary", "diagnostics.result", "editor.path", "row.preview",
-                        "row.trigger", "pill.status", "window.title"] {
+                        "diagnostics.summary", "diagnostics.result", "diagnostics.section",
+                        "editor.path", "row.preview", "row.trigger", "pill.status", "window.title",
+                        "editor.hintSymbol", "row.disabledSymbol"] {
             XCTAssertTrue(Contrast.pairs.contains { $0.element == element }, "\(element) is undeclared")
         }
     }
