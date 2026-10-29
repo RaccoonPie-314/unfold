@@ -17,8 +17,8 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     private let sidebarScroll = NSScrollView()
     private let searchField = NSSearchField()
     private var visible: [Combo] = []
-    /// The ids this pane last showed. Nothing reads it in this task: Task 11 diffs the incoming rows
-    /// against it to decide which rows animate in and which animate out.
+    /// The ids this pane last showed, and the left half of the diff Task 11 animates: a row whose id was
+    /// not here unfolds (`rowInsert`), a row whose id is no longer here collapses (`rowRemove`).
     private var shownIDs: [UUID] = []
 
     /// True when the list shows no rows. The controller reads this for its empty-state copy instead of
@@ -95,26 +95,98 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
 
     @objc private func doubleClicked() { onRequestEdit?() }
 
-    /// Puts the selection back where it was. Row indexes are indexes into `visible`, never into
-    /// `file.combos`, so a filter cannot make the editor select a combo that is not on screen.
+    /// Puts the rows back where they were, and moves the selection to the right row. Row indexes are
+    /// indexes into `visible`, never into `file.combos`, so a filter cannot make the editor select a
+    /// combo that is not on screen.
+    ///
+    /// The two halves of this function are one change on purpose: where a delete lands (`SidebarRowDiff`'s
+    /// neighbour rule) is also the index whose row view `rowRemove` collapses.
     func setRows(_ rows: [Combo], selecting id: UUID?) {
+        let diff = SidebarRowDiff.between(previous: shownIDs, next: rows.map(\.id), requested: id)
         visible = rows
         tableView.reloadData()
-        if let id, let index = visible.firstIndex(where: { $0.id == id }) {
-            tableView.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
-        } else if let first = visible.first {
-            onSelect?(first.id)
-            tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
-        } else {
-            onSelect?(nil)
-        }
         shownIDs = visible.map(\.id)
+
+        switch diff.landing {
+        case .empty:
+            onSelect?(nil)
+            return
+        case .requested(let index):
+            // The controller asked for this combo and it is on screen. Tell it nothing: `selectRowIndexes`
+            // posts when the row moves and stays silent when it does not, and silence is correct here --
+            // re-displaying the editor under a caret that is mid-word is Ruling Q's bug, and this is the
+            // path a replacement edit takes.
+            tableView.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+        case .landed(let index):
+            // What the user had selected left the list (or there was never a selection to honour), and the
+            // table may keep the *same row index* showing a different combo -- which posts nothing. So the
+            // pane reports the landing itself, after the selection has moved, because the window
+            // controller reads `selectedRowFrame` from inside this callback.
+            tableView.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+            onSelect?(visible[index].id)
+        }
+        animate(diff)
+    }
+
+    /// Animates the difference the diff found. Every transition gets its **own** real rect: a row that
+    /// arrived unfolds out of a zero-height gap on its own baseline, and a row that left closes onto the
+    /// baseline of the neighbour it collapsed against -- never one geometry reused for both.
+    ///
+    /// Row views are recycled, so `rowRemove` animates whatever now occupies the vanished row's slot.
+    /// `SidebarRowDiff` only allows that when the slot really took on new content: after a delete the rows
+    /// below move up into it, but deleting the *last* row leaves the row above exactly where it was, and
+    /// morphing that one would animate a row that did not change -- the defect the plan names. (The
+    /// alternative it prescribes, a `bitmapImageRepForCachingDisplay` snapshot of the leaving row, cannot
+    /// collapse: `Motion.morph` always lands on `view.frame`, so a snapshot's pose can only *expand out
+    /// of* the closing line and then vanish. See the Task 11b note.)
+    private func animate(_ diff: SidebarRowDiff) {
+        guard !diff.isEmpty, view.window?.isVisible == true else { return }
+
+        if let insert = MotionPlan.lookup(.rowInsert) {
+            for arrival in diff.arrivals {
+                guard let rowView = tableView.rowView(atRow: arrival.index, makeIfNecessary: true)
+                else { continue }
+                let final = rowView.frame
+                // The table is flipped, so `maxY` is the edge the row's text sits on: the gap opens at the
+                // arriving row's own baseline and the row unfolds out of it.
+                Motion.morph(rowView, source: CGRect(x: final.minX, y: final.maxY,
+                                                     width: final.width, height: 0),
+                             transition: insert)
+            }
+        }
+
+        if let remove = MotionPlan.lookup(.rowRemove) {
+            for departure in diff.departures where departure.collapses {
+                // `makeIfNecessary: true` on both reads, and that is a measurement, not a guess: right
+                // after `reloadData()` the table answers `false` with nil for *every* row, so the collapse
+                // would never have a subject at all. With `true` the row views come back already at their
+                // final resting frames (measured: (0, 50, 300, 40) before and after the next display pass).
+                guard let slot = departure.slotIndex,
+                      let occupant = tableView.rowView(atRow: slot, makeIfNecessary: true)
+                else { continue }
+                // The neighbour above is the row the gap closes onto; its baseline is the line between it
+                // and the vanished row. A delete at the top of the list has no neighbour above, so the gap
+                // closes onto the top line of the slot itself.
+                let line: CGRect
+                if slot > 0, let above = tableView.rowView(atRow: slot - 1, makeIfNecessary: true) {
+                    line = CGRect(x: above.frame.minX, y: above.frame.maxY,
+                                  width: above.frame.width, height: 0)
+                } else {
+                    line = CGRect(x: occupant.frame.minX, y: occupant.frame.minY,
+                                  width: occupant.frame.width, height: 0)
+                }
+                Motion.morph(occupant, source: line, transition: remove)
+            }
+        }
     }
 
     /// The selected row's frame in screen coordinates -- the anchor the editor's morph starts from.
+    ///
+    /// `makeIfNecessary: true`, because this is read from inside `setRows`' selection report, and a table
+    /// that has just been reloaded hands back nil for every row until it is asked to realize one.
     var selectedRowFrame: CGRect? {
         let row = tableView.selectedRow
-        guard row >= 0, let rowView = tableView.rowView(atRow: row, makeIfNecessary: false),
+        guard row >= 0, let rowView = tableView.rowView(atRow: row, makeIfNecessary: true),
               let window = view.window else { return nil }
         return window.convertToScreen(tableView.convert(rowView.frame, to: nil))
     }
@@ -127,6 +199,83 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     /// so the pane never learns about it on its own.
     func clearFilter() {
         searchField.stringValue = ""
+    }
+}
+
+/// What one `setRows` call costs, decided from two id lists and the id the controller asked for -- no
+/// AppKit, no view, no window. This is the part of the row motion that can be proven in-process: which
+/// rows arrive, which leave, and where the selection lands. What the pose on a live row view *looks like*
+/// cannot be, and the live pass owns that; `Tests/UnfoldTests/SidebarRowMotionTests.swift` says exactly
+/// where the line falls.
+struct SidebarRowDiff: Equatable {
+    /// A row that arrived. `index` is its position in the new list, which is where its own baseline is.
+    struct Arrival: Equatable {
+        let id: UUID
+        let index: Int
+    }
+
+    /// A row that left. `slotIndex` is the row index that now holds whatever took its place, and
+    /// `collapses` says whether that slot really changed hands: one collapse per slot, and never a slot
+    /// whose recycled row view is still showing the same combo.
+    struct Departure: Equatable {
+        let id: UUID
+        let oldIndex: Int
+        let slotIndex: Int?
+        let collapses: Bool
+    }
+
+    /// Where the selection lands, and -- just as load-bearing -- whether the pane has to *say* it.
+    enum Landing: Equatable {
+        /// The id the controller asked for is still on screen. The table's own selection notification
+        /// covers this and stays silent when the row index does not move, which is the point: a
+        /// replacement edit must not re-display the editor under its own caret (Ruling Q).
+        case requested(Int)
+        /// Nothing to honour: the selected combo left the list, so the selection lands on its **neighbour**
+        /// -- the row that now sits where it sat, clamped to the end of the list -- and the pane reports it,
+        /// because a table that keeps the same row index for a different combo posts nothing.
+        /// Two deletes with the confirmation unread used to land on row 0 and delete a combo nobody chose.
+        case landed(Int)
+        /// No rows at all.
+        case empty
+    }
+
+    let arrivals: [Arrival]
+    let departures: [Departure]
+    let landing: Landing
+
+    var isEmpty: Bool { arrivals.isEmpty && departures.isEmpty }
+
+    static func between(previous: [UUID], next: [UUID], requested: UUID?) -> SidebarRowDiff {
+        let leaving = Set(previous).subtracting(next)
+        let arriving = Set(next).subtracting(previous)
+        let arrivals = next.enumerated()
+            .filter { arriving.contains($0.element) }
+            .map { Arrival(id: $0.element, index: $0.offset) }
+
+        var claimedSlots: Set<Int> = []
+        var departures: [Departure] = []
+        for (oldIndex, id) in previous.enumerated() where leaving.contains(id) {
+            let slot = next.isEmpty ? nil : min(oldIndex, next.count - 1)
+            // The slot changed hands only when a different combo now sits in it.
+            let moved = slot.map { $0 < previous.count && previous[$0] != next[$0] } ?? false
+            let unclaimed = slot.map { claimedSlots.insert($0).inserted } ?? true
+            departures.append(Departure(id: id, oldIndex: oldIndex, slotIndex: slot,
+                                        collapses: moved && unclaimed))
+        }
+
+        let landing: Landing
+        if next.isEmpty {
+            landing = .empty
+        } else if let requested, let index = next.firstIndex(of: requested) {
+            landing = .requested(index)
+        } else {
+            // The neighbour the deleted row leaves behind: where the selection *was* if that row is gone,
+            // otherwise the first row that left. Both are indexes into the list that no longer has them,
+            // so the landing is clamped to the end of the list that does.
+            let anchor = requested.flatMap { previous.firstIndex(of: $0) } ?? departures.first?.oldIndex
+            landing = .landed(min(anchor ?? 0, next.count - 1))
+        }
+        return SidebarRowDiff(arrivals: arrivals, departures: departures, landing: landing)
     }
 }
 
