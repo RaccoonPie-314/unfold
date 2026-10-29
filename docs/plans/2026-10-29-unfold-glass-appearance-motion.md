@@ -968,7 +968,7 @@ instruction to keep the model path and the eight diagnostics actions on the cont
 `GREEN`. Then on the installed build: open Diagnostics with the stethoscope item and ⌥⌘D, press every
 button, confirm the counters still update once a second and the pane still collapses.
 
-- [ ] **Step 5: Stop for review** -- no commit.
+- [ ] **Step 5: Commit, then stop for review** (one local commit per the Git rule; never push).
 
 ---
 
@@ -1049,7 +1049,7 @@ Then screenshot the toolbar and the Diagnostics pane (`screencapture -l$(...)` o
 check: the diagnostics buttons read as one merged slab, the pill has the lens response on press, the
 list fades where it passes under the filter, and the magnifier does not touch the placeholder.
 
-- [ ] **Step 5: Stop for review** -- no commit.
+- [ ] **Step 5: Commit, then stop for review** (one local commit per the Git rule; never push).
 
 ---
 
@@ -1290,7 +1290,7 @@ Expected: the only `secondaryLabelColor` left in the shell is the disabled-row c
 the suite is green with the new tests included (note the new total). Then read every caption in Light
 mode on the installed build -- the hierarchy should still be obvious at 11 pt against 13 pt.
 
-- [ ] **Step 7: Stop for review** -- no commit.
+- [ ] **Step 7: Commit, then stop for review** (one local commit per the Git rule; never push).
 
 ---
 
@@ -1450,7 +1450,7 @@ swift test --filter MotionPlanTests 2>&1 | grep -E "Executed|failed"
 Expected: 5 tests, 0 failures. `promptPresent` at 0.22 and `promptDismiss` at 0.18 are inside the band;
 if the band test fails, the duration is wrong, not the band.
 
-- [ ] **Step 5: Stop for review** -- no commit.
+- [ ] **Step 5: Commit, then stop for review** (one local commit per the Git rule; never push).
 
 ---
 
@@ -1576,7 +1576,7 @@ swift test --filter MotionGeometryTests 2>&1 | grep -E "Executed|failed"
 Expected: 5 tests, 0 failures. If the flipped/unflipped sign test fails, the ternary is backwards -- fix
 the math, do not adjust the expectation.
 
-- [ ] **Step 5: Stop for review** -- no commit.
+- [ ] **Step 5: Commit, then stop for review** (one local commit per the Git rule; never push).
 
 ---
 
@@ -1777,7 +1777,7 @@ returning to the resting size at the end. A transition that logs one size for al
 animating -- that is the failure this task exists to catch, and it means the transform was applied to the
 wrong space.
 
-- [ ] **Step 5: Stop for review** -- no commit. Keep the measured log lines with the result.
+- [ ] **Step 5: Commit, then stop for review** (one local commit per the Git rule; never push). Keep the measured log lines with the result.
 
 ---
 
@@ -1911,7 +1911,7 @@ the honest coverage is live: delete a middle row and confirm the *neighbour* is 
 fast without reading the alert and confirm the second delete hits what the row said; press `+` and
 confirm `grep "motion:" /tmp/unfold-launch.log` after a probe run still shows changing bounds.
 
-- [ ] **Step 5: Stop for review** -- no commit.
+- [ ] **Step 5: Commit, then stop for review** (one local commit per the Git rule; never push).
 
 ---
 
