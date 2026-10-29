@@ -264,7 +264,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         let item = NSToolbarItem(itemIdentifier: identifier)
         item.label = "Status"
         item.paletteLabel = "Status"
-        item.view = Glass.wrap(stack, cornerRadius: 13, padding: 6)
+        item.view = Glass.container(Glass.wrap(stack, cornerRadius: Theme.Radius.pill, padding: 6))
         statusItem = item
         return item
     }

@@ -46,9 +46,10 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         sidebarScroll.documentView = tableView
         sidebarScroll.hasVerticalScroller = true
         sidebarScroll.drawsBackground = false
-        // The filter pill owns the strip under the toolbar, so the scroll view must not inset itself
-        // for it as well.
-        sidebarScroll.automaticallyAdjustsContentInsets = false
+        // Content insets stay automatic (the property's default of `true`): the system scroll-edge fade
+        // is what `liquid-glass.md` prescribes in place of a solid background under a bar. If the
+        // magnifier glyph ever lands on the placeholder text again, fix it on `searchField` -- not by
+        // suppressing the edge effect, which was the wrong lever.
 
         // The stock search field, not a field inside a hand-made glass capsule: on macOS 26 the
         // system control already *is* the glass pill, and stripping its bezel to put glass behind it

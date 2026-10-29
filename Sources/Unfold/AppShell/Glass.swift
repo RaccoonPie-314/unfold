@@ -33,6 +33,24 @@ enum Glass {
         return glass
     }
 
+    /// Groups several `wrap`-ed controls so the system merges them into one slab instead of drawing a
+    /// separate pane per control, and batches them into one render pass. `spacing` is the proximity at
+    /// which merging begins; the documented default of zero batches without distorting unrelated views.
+    @MainActor
+    static func container(_ content: NSView, mergingAt spacing: CGFloat = 0) -> NSView {
+        let container = NSGlassEffectContainerView()
+        content.translatesAutoresizingMaskIntoConstraints = false
+        container.contentView = content
+        container.spacing = spacing
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            content.topAnchor.constraint(equalTo: container.topAnchor),
+            content.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
+        return container
+    }
+
     /// The window's own surface: a material that blurs what is behind it, which is what gives the
     /// glass controls something to refract. `.underWindowBackground` is the material meant for this
     /// slot.
