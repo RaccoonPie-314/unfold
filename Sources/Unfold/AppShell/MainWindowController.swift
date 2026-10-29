@@ -37,6 +37,9 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     private var statusItem: NSToolbarItem?
     private var addRemoveItems: [NSToolbarItem] = []
     private var statusTimer: Timer?
+    /// The status the pill was last rendered for. `refreshStatus` runs once a second; this is what
+    /// lets an unchanged tick skip the pill's rewrite instead of re-setting identical values.
+    private var lastRenderedStatus: MenuStatus?
 
     // MARK: - Identity
 
@@ -266,6 +269,11 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         item.paletteLabel = "Status"
         item.view = Glass.wrap(stack, cornerRadius: Theme.Radius.pill, padding: 6)
         statusItem = item
+        // Toolbar customization can rebuild this item after the fact, and the fresh stack shows "..."
+        // until something rewrites it. The change-memo would otherwise wait for the status to differ,
+        // so clear it and render once now: the pill self-heals like it did before the memo existed.
+        lastRenderedStatus = nil
+        refreshStatus()
         return item
     }
 
@@ -428,29 +436,30 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     }
 
     private func refreshStatus() {
-        let trusted = PermissionFlow.isTrusted
-        let state: (symbol: String, text: String, color: NSColor)
-        if !trusted {
-            state = ("exclamationmark.triangle.fill", "Grant access", .systemRed)
-        } else if coordinator.isPaused {
-            state = ("pause.circle.fill", "Paused", .systemOrange)
-        } else {
-            switch coordinator.tapState {
-            case .detached, .disabled:
-                state = ("slash.circle.fill", "Tap off", .systemOrange)
-            case .givenUp:
-                state = ("exclamationmark.triangle.fill", "Tap stopped", .systemRed)
-            case .live:
-                state = coordinator.isTapEnabled
-                    ? ("checkmark.circle.fill", "Ready", .systemGreen)
-                    : ("exclamationmark.circle.fill", "Tap disabled", .systemOrange)
-            }
+        // One status vocabulary, two surfaces (Ruling B): the pill used to re-derive its own
+        // `(symbol, text, color)` from the same inputs by a second switch, which could -- and did
+        // drift in colour -- from the menu's tested decision. `MenuStatus.evaluate` is now the only
+        // place the shell decides what the status means; everything below only renders it.
+        let status = MenuStatus.evaluate(isTrusted: PermissionFlow.isTrusted,
+                                         isPaused: coordinator.isPaused,
+                                         tapState: coordinator.tapState,
+                                         isTapEnabled: coordinator.isTapEnabled)
+        // `refreshStatus` runs once a second; the pill's visible parts are rewritten only when the
+        // status actually changed, so an unchanged second costs nothing and Task 11's later
+        // `statusMorph` can fire off this same inequality without ever animating on a no-op tick.
+        if status != lastRenderedStatus {
+            lastRenderedStatus = status
+            statusSymbol?.image = NSImage(systemSymbolName: status.symbolName,
+                                          accessibilityDescription: status.text)
+            statusSymbol?.contentTintColor = status.emphasisColor
+            statusLabel?.stringValue = status.shortText
+            // Monochrome label: the label has to be readable on its own, and only red clears the
+            // glyph floor in Light mode, so the broken states are coloured and the working ones
+            // are not.
+            statusLabel?.textColor = .labelColor
         }
-        statusSymbol?.image = NSImage(systemSymbolName: state.symbol, accessibilityDescription: state.text)
-        statusSymbol?.contentTintColor = state.color
-        statusLabel?.stringValue = state.text
-        statusLabel?.textColor = state.color
-        statusItem?.toolTip = "\(state.text) — \(coordinator.keystrokesSeen) keystrokes, "
+        // Counts move under an unchanged status, so the tooltip refreshes every tick as before.
+        statusItem?.toolTip = "\(status.text) — \(coordinator.keystrokesSeen) keystrokes, "
             + "\(coordinator.tapDisableObservations) tap switch-offs"
         pauseItem?.image = NSImage(systemSymbolName: coordinator.isPaused ? "play.fill" : "pause.fill",
                                    accessibilityDescription: coordinator.isPaused ? "Resume" : "Pause")

@@ -60,6 +60,58 @@ enum MenuStatus: Equatable {
     }
 }
 
+/// The same decision, rendered for the window's status pill.
+///
+/// Ruling B: one vocabulary, two surfaces. The pill used to re-derive `(symbol, text, color)` from the
+/// same inputs by a second switch -- Task 12 Step 1 pulls the shared table here so the surface with the
+/// tests (`MenuStatus.evaluate`) is the only place the app decides what the status *means*. `text` stays
+/// the menu's full sentence; the pill reads `shortText` from the same case, so the two surfaces cannot
+/// disagree about whether expansion can happen.
+extension MenuStatus {
+    /// The pill's one-line form. `text` is the menu's full sentence; both are decided from the same
+    /// case, so they cannot disagree about whether expansion can happen.
+    var shortText: String {
+        switch self {
+        case .notPermitted: return "Grant access"
+        case .paused: return "Paused"
+        case .tapGivenUp: return "Tap stopped"
+        case .notReceivingKeystrokes: return "Tap silent"
+        case .tapInterrupted: return "Tap off"
+        case .tapDetached: return "Tap off"
+        case .listening: return "Ready"
+        }
+    }
+
+    /// The symbol and its emphasis colour. Colour is decoration only: `text` states the same fact, and
+    /// the pill's label is `labelColor` because systemGreen is 2.22:1 over a light window background.
+    var symbolName: String {
+        switch self {
+        case .notPermitted: return "exclamationmark.triangle.fill"
+        case .paused: return "pause.circle.fill"
+        case .tapGivenUp: return "exclamationmark.triangle.fill"
+        case .notReceivingKeystrokes: return "exclamationmark.circle.fill"
+        case .tapInterrupted: return "exclamationmark.circle.fill"
+        case .tapDetached: return "slash.circle.fill"
+        case .listening: return "checkmark.circle.fill"
+        }
+    }
+
+    /// Red is the only status colour that survives Light mode: measured against a light window
+    /// background, `systemGreen` is 2.22:1 and `systemOrange` is 2.31:1, which is a faint smudge rather
+    /// than a status light. So the pill reads as *red means not working, monochrome means working*,
+    /// and the same identity holds in both appearances instead of only in Dark.
+    /// `ContrastTests.testGreenAndOrangeCannotClearTheGlyphFloorInLight` pins the numbers that forced
+    /// this; if they ever change, that test says so.
+    var emphasisColor: NSColor {
+        switch self {
+        case .notPermitted, .tapGivenUp, .notReceivingKeystrokes, .tapInterrupted, .tapDetached:
+            return .systemRed
+        case .paused, .listening:
+            return .labelColor
+        }
+    }
+}
+
 final class StatusItemController: NSObject, NSMenuDelegate {
     private let coordinator: ExpansionCoordinator
     private let comboLoadFailure: String?
