@@ -78,7 +78,12 @@ final class DiagnosticsViewController: NSViewController {
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
 
-        let container = NSView()
+        // The pane backs itself with the same standard `.underWindowBackground` material as the editor
+        // pane: since the 2026-10-29 divider fix the split view controller is the window's content view
+        // controller and there is no window-wide root material, and an unbacked container on this
+        // non-opaque window showed the raw desktop (measured by a subtree scan finding no `.behindWindow`
+        // effect view over the pane region).
+        let container = Glass.windowBackground()
         container.addSubview(stack)
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: container.leadingAnchor),

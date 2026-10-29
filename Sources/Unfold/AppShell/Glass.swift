@@ -33,9 +33,18 @@ enum Glass {
         return glass
     }
 
-    /// The window's own surface: a material that blurs what is behind it, which is what gives the
+    /// A pane's backing surface: a material that blurs what is behind it, which is what gives the
     /// glass controls something to refract. `.underWindowBackground` is the material meant for this
     /// slot.
+    ///
+    /// **Moved to the content layer on 2026-10-29.** It used to be the window's root view behind a
+    /// pinned `NSSplitView`; that made the split view span the titlebar band and its divider drew
+    /// through the unified toolbar. The split view controller is now the window's own content view
+    /// controller -- AppKit's chrome clips the dividers -- and this material is instead the backmost
+    /// view of the editor and diagnostics pane containers. Standard materials belong in the content
+    /// layer; only Liquid Glass is restricted to the functional layer, so this placement is within
+    /// the project's glass rules. The window stays `isOpaque = false` with a clear background, or a
+    /// behind-window material has nothing to sample.
     @MainActor
     static func windowBackground() -> NSView {
         let effect = NSVisualEffectView()

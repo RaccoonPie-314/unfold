@@ -1127,6 +1127,13 @@ list fades where it passes under the filter, and the magnifier does not touch th
 > `windowBackgroundColor` therefore certifies the best case (full reduce-transparency), never the worst.
 > The rows stay, the comment says what it is, and Task 12's capture pass owns the real numbers for pane
 > text as well as the pill.
+> **Amended by the 2026-10-29 divider fix:** the window no longer has that root view. The
+> `NSSplitViewController` is the `window.contentViewController` outright (the wrapper pinned the split
+> view across the titlebar and let its divider draw through the unified toolbar), and the
+> `.underWindowBackground` / `.behindWindow` material is now the backmost view of the editor and
+> diagnostics pane containers. The substance of this ruling is unchanged -- the pane text still sits on
+> behind-window material on a non-opaque window -- only its location moved from the root view to the
+> content layer.
 > (2) **The 13-row table under-declares the shell.** It omits the Diagnostics section header (which the
 > grep gate forces to `labelColor`), the new failure-hint glyph, and the disabled-row slash symbol. Three
 > rows are added: `diagnostics.section` (labelColor, 4.5), `editor.hintSymbol` (systemRed, 3.0),

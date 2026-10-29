@@ -55,6 +55,12 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     /// uses. Internal for `DiagnosticsDividerTests`, which asserts the sidebar's 218 pt divider position
     /// landed -- the exact fact the old nil `view as? NSSplitView` cast silently skipped.
     var splitViewForProbe: NSSplitView? { splitViewView }
+    /// Test seams for `WindowHierarchyTests`: the split view controller itself (the structural fact the
+    /// divider-clipping hierarchy is asserted through -- the window's `contentViewController` **is** this
+    /// object), and the editor/diagnostics panes so their views' safe-area insets can be measured.
+    var splitViewControllerForProbe: NSSplitViewController { splitView }
+    var editorPaneForProbe: EditorViewController { editor }
+    var diagnosticsPaneForProbe: DiagnosticsViewController { diagnostics }
     private var statusItem: NSToolbarItem?
     /// The appearance control, kept so choosing a preference can rewrite *its* tooltip without hunting
     /// the toolbar for it. Reassigned whenever the toolbar rebuilds the item, same as `statusItem`.
@@ -122,8 +128,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         // The panes' views must exist before anything reaches into their controls -- the window's
         // `initialFirstResponder`, the pane closures below, the consistency test and the first
         // `refreshStatus()` (which assigns both diagnostics strings) all do. Loading them here makes
-        // that a contract instead of an accident of `assembleSplitView()` touching `splitView.view`
-        // first.
+        // that a contract instead of an accident of `assembleSplitView()` loading `splitView.view`
+        // when it installs the split view controller as the window's content view controller.
         sidebar.loadViewIfNeeded()
         editor.loadViewIfNeeded()
         diagnostics.loadViewIfNeeded()
@@ -283,21 +289,25 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         diagnosticsItem.isCollapsed = true
         splitView.addSplitViewItem(diagnosticsItem)
 
-        // The split view sits on a window-wide material instead of the opaque default background, so
-        // the desktop reads through the panes and the glass controls have something to sample.
-        let root = NSViewController()
-        root.view = Glass.windowBackground()
-        root.addChild(splitView)
-        let split = splitView.view
-        split.translatesAutoresizingMaskIntoConstraints = false
-        root.view.addSubview(split)
-        NSLayoutConstraint.activate([
-            split.leadingAnchor.constraint(equalTo: root.view.leadingAnchor),
-            split.trailingAnchor.constraint(equalTo: root.view.trailingAnchor),
-            split.topAnchor.constraint(equalTo: root.view.topAnchor),
-            split.bottomAnchor.constraint(equalTo: root.view.bottomAnchor),
-        ])
-        window?.contentViewController = root
+        // The standard hierarchy: **the split view controller is the window's content view controller**,
+        // so AppKit owns the titlebar/toolbar/sidebar chrome and clips the pane dividers below the
+        // toolbar. The previous layout wrapped it in a plain root view controller carrying a window-wide
+        // `Glass.windowBackground()` -- measured before the change, that made the `NSSplitView` span
+        // 0...480 pt while the titlebar+toolbar band is 52 pt (`contentLayoutRect` height 428 of a 480
+        // window), so the editor/diagnostics divider drew straight up through the translucent unified
+        // toolbar (the user's "the separator on the diagnose bar is overlapping", 2026-10-29).
+        // The window-wide material was load-bearing -- the hand-placed glass pill needs something
+        // translucent behind the controls to refract -- so it moves to the content layer instead: the
+        // editor and diagnostics panes each back themselves with `Glass.windowBackground()`. Measured,
+        // both are required: after the root went away, a subtree scan of the window's content view found
+        // behind-window material only wherever a pane container was one -- a plain container left its pane
+        // region with no material at all, and the window is non-opaque with a clear background.
+        // `NSSplitViewController` has no
+        // `init(splitView:)` on this SDK (compile-checked: `type 'NSSplitViewController' has no member
+        // 'init(splitView:)'`), so a custom split view subclass could only be installed through the
+        // `splitView` property before the view loads -- a strictly worse route than the standard
+        // hierarchy, which fixes the chrome itself.
+        window?.contentViewController = splitView
     }
 
     private func installToolbar() {

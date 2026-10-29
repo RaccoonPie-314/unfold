@@ -26,6 +26,12 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
     /// The only way anything leaves the pane.
     var onEdit: ((ComboEdit) -> Void)?
 
+    /// The pane's top spacing, spelled once: the trigger field (the pane's first control) sits this far
+    /// below the **safe area** top, not the view top -- the safe area is what keeps the form out from
+    /// under the unified toolbar. `WindowHierarchyTests` measures the real offset against this constant
+    /// so a hierarchy change that moved the safe area would fail loudly instead of shifting the form.
+    static let firstControlTopGap: CGFloat = 20
+
     private let triggerField = NSTextField(string: "")
     private let replacementScroll = NSScrollView()
     private let replacementView = NSTextView()
@@ -48,6 +54,10 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
 
     /// `ConsistencyTest` types into this and reads it back.
     var tryTextView: NSTextView { tryView }
+
+    /// Test seam for `WindowHierarchyTests`: the pane's first control, so the top spacing can be
+    /// measured against `Self.firstControlTopGap` instead of trusted to the constraint's name.
+    var triggerFieldForProbe: NSTextField { triggerField }
 
     // MARK: - Construction
 
@@ -99,7 +109,12 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
         let triggerCaption = caption("Trigger")
         let replacementCaption = caption("Replacement")
         let tryCaption = caption("Try it")
-        let container = NSView()
+        // The pane backs itself with the standard `.underWindowBackground` behind-window material:
+        // the split view controller is the window's content view controller (2026-10-29 divider fix),
+        // so there is no window-wide root material any more, and the glass controls need something
+        // translucent behind them to refract. Standard materials belong in the content layer; only
+        // Liquid Glass is restricted to the functional layer.
+        let container = Glass.windowBackground()
         let views = [triggerCaption, replacementCaption, tryCaption, triggerField, hintSymbol, editorHint,
                      replacementScroll, insertionPopUp, enabledSwitch, enabledLabel, tryScroll, pathLabel]
         views.forEach {
@@ -145,7 +160,8 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
             pathLabel.trailingAnchor.constraint(equalTo: guide.trailingAnchor,
                                                 constant: -Theme.Spacing.panePadding),
 
-            triggerField.topAnchor.constraint(equalTo: guide.topAnchor, constant: 20),
+            triggerField.topAnchor.constraint(equalTo: guide.topAnchor,
+                                              constant: Self.firstControlTopGap),
             triggerCaption.centerYAnchor.constraint(equalTo: triggerField.centerYAnchor),
             editorHint.topAnchor.constraint(equalTo: triggerField.bottomAnchor, constant: 4),
 
