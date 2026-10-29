@@ -36,6 +36,15 @@ enum Contrast {
         .init(element: "editor.path", text: .labelColor, backing: .windowBackgroundColor, floor: 4.5),
         .init(element: "row.trigger", text: .labelColor, backing: .windowBackgroundColor, floor: 4.5),
         .init(element: "row.preview", text: .labelColor, backing: .windowBackgroundColor, floor: 4.5),
+        // **Deliberately absent: the on-pill pairs.** The selected row's two lines render over
+        // `SelectionPillView`'s glass, and the only honest backing for that is the translucent
+        // `NSGlassEffectView` itself -- which samples whatever is behind the window, a colour this table
+        // cannot name. `ratio` refuses a translucent backing rather than inventing one, so certifying
+        // `row.triggerOnPill` / `row.previewOnPill` here would mean pointing them at
+        // `windowBackgroundColor` and calling the number honest. It is not: the pair is left to the
+        // live pass (both appearances, over a light and a dark desktop picture). The colours themselves
+        // are the ones above -- `labelColor`, and `secondaryLabelColor` for a disabled trigger -- because
+        // with the system highlight off, what `ComboRowView.apply` sets is exactly what the glass carries.
         .init(element: "pill.status", text: .labelColor, backing: .windowBackgroundColor, floor: 4.5),
         // The status glyph is the one coloured element in the control layer, and red is the only
         // semantic status colour that clears the 3:1 graphic floor in both appearances -- measured,

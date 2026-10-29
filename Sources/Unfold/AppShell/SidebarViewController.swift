@@ -22,6 +22,15 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     /// where the selection lands after a delete -- the correctness half of a delete, which survives the
     /// row-motion transitions the user asked to have removed on 2026-10-29.
     private var shownIDs: [UUID] = []
+    /// The pill's last **placed** rect, in the table's own coordinates, or nil while it is hidden. The
+    /// slide's source pose is read from it, which is why "first appearance places, later moves slide"
+    /// needs no other state.
+    private var lastPillFrame: CGRect?
+
+    /// The glass selection pill. Internal rather than private because `SelectionPillTests` measures its
+    /// **placement in the view hierarchy** -- behind the row views, inside the scrolled document -- and a
+    /// placement nobody can read is a placement nobody can prove. Nothing outside the pane moves it.
+    let selectionPill = SelectionPillView()
 
     /// True when the list shows no rows. The controller reads this for its empty-state copy instead of
     /// reaching into the table view.
@@ -33,6 +42,11 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     override func loadView() {
         tableView.headerView = nil
         tableView.style = .sourceList
+        // The system source-list selection fill is switched off in favour of one glass pill
+        // (`SelectionPillView`) that slides row to row -- the user's request of 2026-10-29. `.none` is a
+        // real case of `NSTableView.SelectionHighlightStyle` (`NSTableView.h:101`), and `.sourceList`
+        // stays as the table **style** because that is what supplies the row insets and gaps.
+        tableView.selectionHighlightStyle = .none
         tableView.allowsMultipleSelection = false
         tableView.allowsEmptySelection = true
         tableView.usesAutomaticRowHeights = true
@@ -48,6 +62,13 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         sidebarScroll.documentView = tableView
         sidebarScroll.hasVerticalScroller = true
         sidebarScroll.drawsBackground = false
+        // The pill lives **inside the document view**, inserted below every row view: the row views are
+        // its siblings painted after it, its frame is written in the same space as
+        // `tableView.rect(ofRow:)`, and scrolling moves it with the rows for free. `NSScrollView`'s
+        // `overlayView` was rejected on measurement grounds -- it paints **above** the content, which
+        // would refract the row text it is supposed to sit behind. The placement is asserted by
+        // `SelectionPillTests.testThePillSitsBehindTheRowViewsItMarks`, not trusted to this comment.
+        tableView.addSubview(selectionPill, positioned: .below, relativeTo: nil)
         // Content insets stay automatic (the property's default of `true`): the system scroll-edge fade
         // is what `liquid-glass.md` prescribes in place of a solid background under a bar. If the
         // magnifier glyph ever lands on the placeholder text again, fix it on `searchField` -- not by
@@ -86,8 +107,28 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
+        positionSelectionPill(animated: true)
         let row = tableView.selectedRow
         onSelect?(row >= 0 && row < visible.count ? visible[row].id : nil)
+    }
+
+    /// The row views carry one thing `NSTableView`'s defaults do not: a resize callback. An
+    /// automatic-height row is **not final** when AppKit first tiles it (measured with a temporary
+    /// probe: both `rect(ofRow:)` and the freshly added row view reported the 24 pt default during
+    /// `reloadData`, the laid-out height is 40 pt, and the correction arrives later as an in-place
+    /// resize with no delegate callback of its own). The pill re-places on that resize -- without
+    /// animating, because following the ruler is not the user switching trigger words.
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        let identifier = NSUserInterfaceItemIdentifier("unfold.pillTrackingRow")
+        let rowView: PillTrackingRowView
+        if let reused = tableView.makeView(withIdentifier: identifier, owner: nil) as? PillTrackingRowView {
+            rowView = reused
+        } else {
+            rowView = PillTrackingRowView()
+            rowView.identifier = identifier
+        }
+        rowView.onGeometryChange = { [weak self] in self?.positionSelectionPill(animated: false) }
+        return rowView
     }
 
     func controlTextDidChange(_ notification: Notification) {
@@ -97,6 +138,56 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
 
     @objc private func doubleClicked() { onRequestEdit?() }
 
+    /// Moves the glass selection pill onto the row the table has selected -- or hides it when nothing is
+    /// selected, because an empty list has no row to mark.
+    ///
+    /// Three rules, each asserted in `SelectionPillTests` rather than trusted to prose:
+    /// * The **first** placement, and every placement from a hidden pill (`lastPillFrame == nil` in
+    ///   both), sets the frame and runs no animation: there is no position the user watched the pill
+    ///   leave, so a slide from nowhere is the flash the row transitions were deleted for.
+    /// * A move between two visible placements is one `Motion.morph` under the plan's `selectionSlide`,
+    ///   whose source pose is the pill's previous frame grown down by `MotionGeometry.slideGrowRatio` --
+    ///   no second animation path.
+    /// * A placement already at its target does nothing, so the `selectRowIndexes` inside `setRows`
+    ///   (which fires the selection notification *and* lands here in the same turn) cannot restart an
+    ///   identity morph whose only visible effect would be the anti-flash opacity ramp.
+    ///
+    /// `animated == false` is the layout clock -- `viewDidLayout` (window resize) and the
+    /// `PillTrackingRowView` resize hook (AppKit finishing an automatic row height) re-place without
+    /// motion: the pill **following the ruler** is not a selection change, and measured, the rect right
+    /// after `reloadData()` is not the final one.
+    private func positionSelectionPill(animated: Bool) {
+        let row = tableView.selectedRow
+        guard row >= 0, row < visible.count else {
+            selectionPill.isHidden = true
+            lastPillFrame = nil
+            return
+        }
+        let target = Self.pillFrame(inRowRect: tableView.rect(ofRow: row))
+        guard selectionPill.isHidden || target != lastPillFrame else { return }
+        let previous = lastPillFrame
+        selectionPill.frame = target
+        selectionPill.isHidden = false
+        lastPillFrame = target
+        if animated, let previous, let slide = MotionPlan.lookup(.selectionSlide) {
+            Motion.morph(selectionPill,
+                         source: MotionGeometry.slideAndGrowSource(previous: previous),
+                         transition: slide)
+        }
+    }
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        positionSelectionPill(animated: false)
+    }
+
+    /// The pill's rect for a row: the row's own rect, inset by the list's horizontal inset so the pill
+    /// lines up with the filter field's column instead of running into the scroller. Height is the
+    /// row's -- the pill marks *the row*, not a capsule floating inside it.
+    private static func pillFrame(inRowRect rowRect: CGRect) -> CGRect {
+        rowRect.insetBy(dx: Theme.Spacing.rowPillInset, dy: 0)
+    }
+
     /// Puts the rows back where they were, and moves the selection to the right row. Row indexes are
     /// indexes into `visible`, never into `file.combos`, so a filter cannot make the editor select a
     /// combo that is not on screen.
@@ -104,7 +195,10 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     /// The landing rule below (`SidebarRowDiff`'s neighbour clamp) is the correctness half of a delete:
     /// two deletes with the confirmation unread used to land on row 0 and destroy a combo nobody chose.
     /// Row motion on top of it was removed by user decision on 2026-10-29 -- `setRows` now reloads and
-    /// selects, and nothing between those is animated.
+    /// selects, and no row transform rides along. The glass selection pill does follow: every landing
+    /// ends at `positionSelectionPill`, which reads the selection this method has just landed (the
+    /// `selectRowIndexes` below usually fires the selection notification first; the trailing call is
+    /// the same-index path, where no notification posts).
     func setRows(_ rows: [Combo], selecting id: UUID?) {
         let diff = SidebarRowDiff.between(previous: shownIDs, next: rows.map(\.id), requested: id)
         visible = rows
@@ -113,6 +207,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
 
         switch diff.landing {
         case .empty:
+            positionSelectionPill(animated: true)
             onSelect?(nil)
             return
         case .requested(let index):
@@ -138,6 +233,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
             tableView.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
             if indexAlreadySelected { onSelect?(visible[index].id) }
         }
+        positionSelectionPill(animated: true)
     }
 
     /// The controller clears the filter when a combo is added, because "new" is a word a half-typed
@@ -198,12 +294,37 @@ struct SidebarRowDiff: Equatable {
     }
 }
 
-/// A source-list row. The trigger is what a person scans for, so it owns the first line and the
-/// replacement sits underneath it rather than competing for the same row.
+/// An `NSTableRowView` that says out loud when AppKit changes its size.
 ///
-/// Both `NSTableCellView` outlets are set on purpose: the cell only recolours the views handed to
-/// `textField` and `imageView` when a row becomes selected, so a symbol or label wired up as a plain
-/// subview keeps its accent tint and disappears into the blue selection.
+/// The automatic row height is computed *after* the row view is added, and the correction arrives as a
+/// bare `setFrameSize:` with no delegate callback (measured 2026-10-29: during `reloadData` the fresh
+/// row view and `rect(ofRow:)` both said 24 pt; the laid-out height is 40 pt). The selection pill's
+/// placement needs that moment; nothing else about the row changes.
+///
+/// `drawSelection(in:)` is switched off in this subclass as belt-and-braces: the table already runs
+/// `selectionHighlightStyle = .none` and the glass pill is the selection mark, so a row view that
+/// re-consulted the style could only double the paint.
+private final class PillTrackingRowView: NSTableRowView {
+    var onGeometryChange: (() -> Void)?
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        // Every call, not just the size-changing ones: the probe measured AppKit re-tiling rows with
+        // same-size `setFrameSize:` passes that carry the *origin* correction -- skipping those leaves
+        // the pill parked on the stale (10, 34, 280, 24) while the row has already settled at
+        // (..., 50, ..., 40). `positionSelectionPill` no-ops unless the pill's own target moved, so the
+        // extra calls cost one rect comparison each.
+        onGeometryChange?()
+    }
+    override func drawSelection(in dirtyRect: NSRect) {}
+}
+
+/// A source-list row. The trigger is what a person scans for, so it owns the first line and the
+/// replacement sits underneath it rather than competing for the same row.///
+/// Both `NSTableCellView` outlets are still set -- `imageView` on the disabled-row slash, `textField` on
+/// the trigger -- but with `selectionHighlightStyle = .none` AppKit no longer recolours them on
+/// selection, and it is deliberate that the colours below no longer depend on it: both lines are
+/// `labelColor` (disabled triggers `secondaryLabelColor`) and the glass pill behind the row carries the
+/// selection instead of a fill swapping the text to a highlighted colour.
 private final class ComboRowView: NSTableCellView {
     static let identifier = NSUserInterfaceItemIdentifier("unfold.comboRow")
 
@@ -254,7 +375,9 @@ private final class ComboRowView: NSTableCellView {
         // secondary label, which measures 3.95:1 in Light and 5.89:1 in Dark -- deliberately under the
         // 4.5:1 text floor, because "disabled" is the message and the slash symbol plus the tooltip
         // carry it without colour (see `row.triggerDisabled` in Contrast.swift, floored at 3.0).
-        // Tertiary label is not an option at any size: it measures 1.88:1 in Light.
+        // Tertiary label is not an option at any size: it measures 1.88:1 in Light. These colours do
+        // not change on selection any more -- the selection highlight is `.none` and the glass pill
+        // carries the mark -- so the pair the user sees over the pill is exactly the pair set here.
         triggerLabel.textColor = combo.enabled ? .labelColor : .secondaryLabelColor
         previewLabel.stringValue = combo.preview
         // Only the exception gets an icon. A filled circle on every row reads as a column of radio

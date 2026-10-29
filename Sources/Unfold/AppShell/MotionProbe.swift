@@ -5,10 +5,10 @@ import AppKit
 @MainActor
 enum MotionProbe {
     /// The transitions the probe runs: every id the shell actually wires. `promptPresent` and
-    /// `promptDismiss` are Plan 4's -- the panel they need does not exist yet -- and the row-motion and
-    /// selection-line transitions were removed by user decision on 2026-10-29, so two ids remain in the
-    /// plan and both are wired, which is what `MotionProbeTests` asserts.
-    static let wiredTransitionIDs: [TransitionID] = [.paneReveal, .statusMorph]
+    /// `promptDismiss` are Plan 4's -- the panel they need does not exist yet -- and the selection-line
+    /// and row-flash transitions were removed by user decision on 2026-10-29, so this is the wired set
+    /// and `MotionProbeTests` asserts it.
+    static let wiredTransitionIDs: [TransitionID] = [.selectionSlide, .paneReveal, .statusMorph]
 
     /// Runs the two wired transitions against `host`, staggered past the previous one's duration plus a
     /// settle gap. `Motion.morph` deliberately removes the in-flight animation when a new target arrives, so
@@ -34,6 +34,10 @@ enum MotionProbe {
     ///   width. Production's source is the pill's previous frame as the toolbar laid it out
     ///   (`MainWindowController.morphStatusPill(from:)`); the probe only has the host, so it synthesizes the
     ///   width change the call site expresses, at half the resting width.
+    /// - `.slideAndGrow` (`selectionSlide`) -- the selection pill's travel: production's source is the
+    ///   pill's previous row rect shrunk about its centre (`MotionGeometry.slideAndGrowSource`), so the
+    ///   probe synthesizes the same shape from a "previous row" one row-width to the left of the host.
+    ///   Same helper as the pane, one spelling (Ruling AJ4).
     /// - `.positionCrossfade` is no production call site's shape today -- it belongs to the
     ///   `promptPresent` / `promptDismiss` pair Plan 4 will wire onto its prompt panel -- and the
     ///   sidebar-row-to-field line that used it was removed by user decision on 2026-10-29. The arm keeps
@@ -43,6 +47,8 @@ enum MotionProbe {
         case .growFromEdge:      return MotionGeometry.revealEdge(for: final)
         case .symbolMorph:       return CGRect(x: final.minX, y: final.minY,
                                                width: final.width / 2, height: final.height)
+        case .slideAndGrow:      return MotionGeometry.slideAndGrowSource(
+                                        previous: final.offsetBy(dx: -final.width, dy: 0))
         case .positionCrossfade: return final.offsetBy(dx: -final.width, dy: 0)
         }
     }

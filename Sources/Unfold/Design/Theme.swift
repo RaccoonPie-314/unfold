@@ -8,13 +8,17 @@ import AppKit
 enum Theme {
     enum Radius {
         static let card: CGFloat = 10    // glass-wrapped clusters
-        static let pill: CGFloat = 13    // the toolbar status pill
+        static let pill: CGFloat = 13    // the toolbar status pill and the sidebar selection pill
     }
 
     enum Spacing {
         static let panePadding: CGFloat = 24
         static let captionColumn: CGFloat = 82
         static let gutter: CGFloat = 12
+        /// The horizontal inset the glass selection pill takes off a source-list row's rect -- the same
+        /// 10 pt the filter field is inset from the pane edge, so the pill lines up with the list's own
+        /// inset column instead of running to the scroller.
+        static let rowPillInset: CGFloat = 10
     }
 
     enum Font {

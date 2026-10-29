@@ -205,7 +205,7 @@ final class MotionDriverTests: XCTestCase {
 
         print("spring settle measurements:\n" + lines.joined(separator: "\n"))
         for line in lines { NSLog("motion spring: \(line)") }
-        XCTAssertEqual(springs, 2, "the plan's two springs are what this test measures")
+        XCTAssertEqual(springs, 3, "the plan's springs are what this test measures")
     }
 
     // MARK: - finding 2: interruption

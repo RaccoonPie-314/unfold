@@ -55,13 +55,32 @@ final class MotionProbeTests: XCTestCase {
         XCTAssertEqual(source.minX, final.minX, "the pill keeps its origin and grows or shrinks from it")
     }
 
+    /// `selectionSlide` moves a **whole box**: the probe's source is the helper's previous-row rect shrunk
+    /// about its centre, so it must sit left of the host (the travel) and inside it (the grow) -- a source
+    /// that equals the final rect would morph identity onto identity and log a slide that is not there.
+    @MainActor
+    func testSelectionSlideIsGivenAGrownPreviousRowRect() {
+        let source = MotionProbe.sourceRect(for: plan(.selectionSlide), final: final)
+        XCTAssertEqual(source, MotionGeometry.slideAndGrowSource(
+                                   previous: final.offsetBy(dx: -final.width, dy: 0)),
+                       "the probe must use the helper the sidebar pill's call site calls")
+        XCTAssertLessThan(source.midX, final.midX, "the pill travels from where it was, not from where it lands")
+        XCTAssertLessThan(source.width, final.width)
+        XCTAssertLessThan(source.height, final.height)
+        XCTAssertEqual(source.width, final.width * MotionGeometry.slideGrowRatio, accuracy: 0.001,
+                       "the grow is the helper's ratio, not a number the probe invented")
+        XCTAssertEqual(source.height, final.height * MotionGeometry.slideGrowRatio, accuracy: 0.001)
+        XCTAssertTrue(source.width > 0 && source.height > 0,
+                      "a slide moves a box; a closed axis here is the deleted row-flash shape: \(source)")
+    }
+
     // MARK: - the geometry enum is what drives the choice
 
     @MainActor
     func testEveryGeometryCaseIsCoveredAndNoTwoCasesShareARect() {
         // `Geometry` was declared and unread for the whole pass; the probe reading it is what makes the
         // per-transition shapes a compile-time-exhaustive property rather than a copy-paste.
-        let cases: [Geometry] = [.growFromEdge, .positionCrossfade, .symbolMorph]
+        let cases: [Geometry] = [.growFromEdge, .positionCrossfade, .symbolMorph, .slideAndGrow]
         var byGeometry: [Geometry: CGRect] = [:]
         for geometry in cases {
             let transition = Transition(id: .paneReveal, duration: 0.2, curve: .spring(damping: 0.85),
@@ -77,7 +96,7 @@ final class MotionProbeTests: XCTestCase {
             case .growFromEdge:
                 XCTAssertTrue(rect.width == 0 || rect.height == 0,
                               "\(geometry) is a gap or an edge, so one axis has to start closed: \(rect)")
-            case .symbolMorph, .positionCrossfade:
+            case .symbolMorph, .positionCrossfade, .slideAndGrow:
                 XCTAssertTrue(rect.width > 0 && rect.height > 0,
                               "\(geometry) moves a whole box, not a closing gap: \(rect)")
             }

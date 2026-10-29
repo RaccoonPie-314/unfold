@@ -63,4 +63,18 @@ enum MotionGeometry {
     static func revealEdge(for final: CGRect) -> CGRect {
         CGRect(x: final.minX, y: final.minY, width: 0, height: final.height)
     }
+
+    /// How much of its own size a sliding selection pill wears at the start of its travel: the previous
+    /// rect inset about its centre by this ratio, so the pill lands having **grown** the last ~10% into
+    /// the row it arrived on -- "a glass enlarge pill and just sliding through", the user's words.
+    static let slideGrowRatio: CGFloat = 0.9
+
+    /// The selection pill's source pose: the rect it was last seen at, shrunk by `slideGrowRatio` about
+    /// its centre. Derived from the pill's own measured previous frame, so the travel is row-to-row in
+    /// the document's space and the grow is a few points, not a spectacle. One spelling shared with
+    /// `MotionProbe` (Ruling AJ4) so a probe and the pane cannot drift apart.
+    static func slideAndGrowSource(previous: CGRect) -> CGRect {
+        previous.insetBy(dx: previous.width * (1 - slideGrowRatio) / 2,
+                         dy: previous.height * (1 - slideGrowRatio) / 2)
+    }
 }

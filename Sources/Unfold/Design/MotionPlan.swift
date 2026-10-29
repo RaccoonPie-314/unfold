@@ -2,6 +2,7 @@ import Foundation
 
 /// Which transition, with what timing, moving what.
 enum TransitionID: String, CaseIterable {
+    case selectionSlide
     case paneReveal, statusMorph
     case promptPresent, promptDismiss
 }
@@ -28,6 +29,11 @@ enum Geometry {
     /// on 2026-10-29.
     case positionCrossfade // shared element from one rect to another
     case symbolMorph       // SF Symbol replacement plus a width change
+    /// The glass selection pill's travel: it slides from the row it was on to the row it lands on and
+    /// arrives having grown the last few percent into size, so a *whole box* moves -- unlike
+    /// `.growFromEdge`, which opens a closed axis. The user asked for exactly this on 2026-10-29; it
+    /// stays inside the list and is not the rejected travelling line (Ruling AK).
+    case slideAndGrow
 }
 
 struct Transition: Equatable {
@@ -44,6 +50,8 @@ struct Transition: Equatable {
 /// (`MotionGeometry`), and the driver (Task 10) owns the conversion between the two.
 enum MotionPlan {
     static let all: [Transition] = [
+        .init(id: .selectionSlide, duration: 0.24, curve: .spring(damping: 0.85),
+              geometry: .slideAndGrow, opacityRamp: 0.2),
         .init(id: .paneReveal, duration: 0.28, curve: .spring(damping: 0.85),
               geometry: .growFromEdge, opacityRamp: 0.2),
         .init(id: .statusMorph, duration: 0.24, curve: .easeOut(0.33, 1, 0.68, 1),
