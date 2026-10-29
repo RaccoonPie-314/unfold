@@ -30,7 +30,13 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
     private let replacementScroll = NSScrollView()
     private let replacementView = NSTextView()
     private let insertionPopUp = NSPopUpButton()
-    private let enabledCheck = NSButton(checkboxWithTitle: "Enabled", target: nil, action: nil)
+    /// The native Apple pill toggle the user asked for on 2026-10-29 ("the switch button, i want the
+    /// native apple pill toggle"). `NSSwitch` is an `NSControl` whose `state` is `NSControlStateValue`,
+    /// so the existing `.on`-check commit path is unchanged. The "Enabled" text is a separate
+    /// `NSTextField` label, not the control's title -- a checkbox folds the two together; the pill does
+    /// not, and the label stays as the visible name.
+    private let enabledSwitch = NSSwitch()
+    private let enabledLabel = NSTextField(labelWithString: "Enabled")
     private let editorHint = NSTextField(wrappingLabelWithString: "")
     /// A failure hint is label-colour text with a red glyph, not red text: `systemRed` at 11 pt over a
     /// light window background is 3.57:1, under the floor for meaningful text. The sentence carries the
@@ -58,8 +64,11 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
         insertionPopUp.addItems(withTitles: ["Paste", "Type as keystrokes"])
         insertionPopUp.target = self
         insertionPopUp.action = #selector(commitInsertion)
-        enabledCheck.target = self
-        enabledCheck.action = #selector(commitEnabled)
+        enabledSwitch.target = self
+        enabledSwitch.action = #selector(commitEnabled)
+        // The pill itself carries no word, so VoiceOver and the keyboard name come from the label.
+        enabledSwitch.setAccessibilityLabel("Enabled")
+        enabledLabel.font = Theme.Font.body
 
         editorHint.font = Theme.Font.caption
         editorHint.textColor = .labelColor
@@ -92,7 +101,7 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
         let tryCaption = caption("Try it")
         let container = NSView()
         let views = [triggerCaption, replacementCaption, tryCaption, triggerField, hintSymbol, editorHint,
-                     replacementScroll, insertionPopUp, enabledCheck, tryScroll, pathLabel]
+                     replacementScroll, insertionPopUp, enabledSwitch, enabledLabel, tryScroll, pathLabel]
         views.forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview($0)
@@ -144,8 +153,13 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
             replacementScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 110).withPriority(750),
             replacementCaption.topAnchor.constraint(equalTo: replacementScroll.topAnchor, constant: 3),
             insertionPopUp.topAnchor.constraint(equalTo: replacementScroll.bottomAnchor, constant: 10),
-            enabledCheck.leadingAnchor.constraint(equalTo: insertionPopUp.trailingAnchor, constant: 10),
-            enabledCheck.centerYAnchor.constraint(equalTo: insertionPopUp.centerYAnchor),
+            // The switch takes the exact slot the checkbox held: leading = pop-up trailing + the same
+            // 10-pt gutter, centred on the pop-up's axis. The "Enabled" label trails the pill so the
+            // control keeps the leading/gutter alignment the checkbox had beside the Paste pop-up.
+            enabledSwitch.leadingAnchor.constraint(equalTo: insertionPopUp.trailingAnchor, constant: 10),
+            enabledSwitch.centerYAnchor.constraint(equalTo: insertionPopUp.centerYAnchor),
+            enabledLabel.leadingAnchor.constraint(equalTo: enabledSwitch.trailingAnchor, constant: 6),
+            enabledLabel.centerYAnchor.constraint(equalTo: insertionPopUp.centerYAnchor),
 
             tryScroll.topAnchor.constraint(equalTo: insertionPopUp.bottomAnchor, constant: 18),
             tryScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 80).withPriority(750),
@@ -204,7 +218,7 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
             triggerField.isEnabled = false
             replacementView.isEditable = false
             insertionPopUp.isEnabled = false
-            enabledCheck.state = .off
+            enabledSwitch.state = .off
             return
         }
         triggerField.isEnabled = true
@@ -213,7 +227,7 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
         triggerField.stringValue = combo.trigger
         replacementView.string = Template.serialize(combo.parts)
         insertionPopUp.selectItem(withTitle: combo.insertion == .paste ? "Paste" : "Type as keystrokes")
-        enabledCheck.state = combo.enabled ? .on : .off
+        enabledSwitch.state = combo.enabled ? .on : .off
     }
 
     /// Renders the hint the controller computed. Failure is the red-glyph case ("Not saved -- ...",
@@ -283,7 +297,7 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
     }
 
     @objc private func commitEnabled() {
-        onEdit?(.enabled(enabledCheck.state == .on))
+        onEdit?(.enabled(enabledSwitch.state == .on))
     }
 }
 
