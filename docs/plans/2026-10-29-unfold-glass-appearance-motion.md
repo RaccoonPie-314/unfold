@@ -1327,12 +1327,110 @@ mode on the installed build -- the hierarchy should still be obvious at 11 pt ag
 
 ### Task 8: `MotionPlan` -- the transitions as data
 
+> **Amendment (Ruling Z), decided from Task 8/9's review.** The review found that the test code specified
+> below is weak in four ways, and it is the plan's code being wrong, not the pass's. Apply these
+> replacements to `MotionPlanTests.swift` as part of Task 8:
+>
+> 1. **Pin the contract exactly, per id.** The `0.15-0.32` band cannot catch the realistic mistake
+>    (`0.26 ↔ 0.28` transposed between `rowInsert` and `paneReveal`), and both curve loops are `if case`
+>    filters, so swapping `rowInsert` from `.spring` to `.easeOut` passes. Add:
+>
+>    ```swift
+>    /// The contract as an exact table, because a band this wide passes any plausible transposition of the
+>    /// real numbers and the id-to-curve-kind mapping is otherwise unpinned.
+>    func testEachTransitionIsExactlyAsSpecified() {
+>        let expected: [TransitionID: (duration: Double, curve: Curve, ramp: Double)] = [
+>            .rowInsert: (0.26, .spring(damping: 0.85, response: 0.28), 0.2),
+>            .rowRemove: (0.22, .easeOut(0.33, 1, 0.68, 1), 0.2),
+>            .selectionMorph: (0.20, .easeOut(0.33, 1, 0.68, 1), 0.2),
+>            .paneReveal: (0.28, .spring(damping: 0.85, response: 0.30), 0.2),
+>            .statusMorph: (0.24, .easeOut(0.33, 1, 0.68, 1), 0.2),
+>            .promptPresent: (0.22, .spring(damping: 0.85, response: 0.26), 0.2),
+>            .promptDismiss: (0.18, .easeOut(0.33, 1, 0.68, 1), 0.2),
+>        ]
+>        XCTAssertEqual(Set(MotionPlan.all.map(\.id)), Set(TransitionID.allCases),
+>                       "the table and the enum have drifted apart")
+>        for t in MotionPlan.all {
+>            let e = expected[t.id]
+>            XCTAssertEqual(t.duration, e.duration, accuracy: 0.0001, "\(t.id) duration")
+>            XCTAssertEqual(t.curve, e.curve, "\(t.id) curve")
+>            XCTAssertEqual(t.opacityRamp, e.ramp, accuracy: 0.0001, "\(t.id) ramp")
+>        }
+>    }
+>    ```
+>    Keep the band tests as the coarse guard; `Curve` already conforms to `Equatable` and the exact table is
+>    what uses it.
+>
+> 2. **Assert the property, not the proxy.** `x1 >= 0.30` excludes `cubic-bezier(0.22, 1, 0.36, 1)` only
+>    because that curve happened to have a small first x; the complaint was about *progress by 45 ms*, which
+>    is set by the y control points the band test discards as `_`. Add a test-local evaluator (a
+>    `CAMediaTimingFunction` is AppKit/QuartzCore and this file must stay Foundation-only) and bound the
+>    sampled progress:
+>
+>    ```swift
+>    /// A cubic timing function maps time-progress to value-progress through a parameter, so the value at a
+>    /// given time is found by solving x(t)=time for t. Bisection is enough: the x curve is monotonic for
+>    /// control points inside [0, 1].
+>    private func progress(of curve: (Double, Double, Double, Double), atTime time: Double) -> Double {
+>        let (x1, y1, x2, y2) = curve
+>        func axis(_ a: Double, _ b: Double, _ t: Double) -> Double {
+>            3 * (1 - t) * (1 - t) * t * a + 3 * (1 - t) * t * t * b + t * t * t
+>        }
+>        var low = 0.0, high = 1.0, mid = 0.5
+>        for _ in 0..<40 {
+>            mid = (low + high) / 2
+>            if axis(x1, x2, mid) < time { low = mid } else { high = mid }
+>        }
+>        return axis(y1, y2, mid)
+>    }
+>
+>    /// "It looked like nothing" is a statement about how much of the change is spent early, so the guard is
+>    /// the sampled property rather than the control points: at 45 ms into any transition in this plan, no
+>    /// more than half the change may be gone. The curve that failed before was at ~76% by then.
+>    func testNoCurveSpendsHalfItsChangeInFortyFiveMilliseconds() {
+>        for t in MotionPlan.all {
+>            guard case .easeOut(let x1, let y1, let x2, let y2) = t.curve else { continue }
+>            for (label, value) in [("x1", x1), ("y1", y1), ("x2", x2), ("y2", y2)] {
+>                XCTAssertGreaterThanOrEqual(value, 0, "\(t.id) \(label) below 0")
+>                XCTAssertLessThanOrEqual(value, 1, "\(t.id) \(label) above 1")
+>            }
+>            let at45 = min(1, 0.045 / t.duration)
+>            let spent = progress(of: (x1, y1, x2, y2), atTime: at45)
+>            XCTAssertLessThanOrEqual(spent, 0.5,
+>                "\(t.id) is \(String(format: "%.0f%%", spent * 100)) done by 45ms")
+>        }
+>    }
+>    ```
+>
+> 3. **`testEveryTransitionMovesGeometry` currently contains no assertion** -- it works once (a new `.fade`
+>    case makes the exhaustive switch a compile error) and then degrades silently if anyone adds
+>    `default:`. Keep the switch as the compile-time guard and give it real teeth:
+>
+>    ```swift
+>    let allowed: Set<String> = ["scaleFromGap", "collapseToGap", "growFromEdge",
+>                                "positionCrossfade", "symbolMorph"]
+>    for t in MotionPlan.all {
+>        XCTAssertFalse(String(describing: t.geometry).contains("fade"), "\(t.id)")
+>        XCTAssertTrue(allowed.contains(String(describing: t.geometry)), "\(t.id) \(t.geometry)")
+>    }
+>    ```
+>
+> 4. **`opacityRamp` is a door left open.** Nothing reads it yet and nothing bounds it, so a future fade is
+>    expressible without adding a `Geometry` case: set the ramp near 1.0 and let the driver do the work. Add
+>    `XCTAssert(t.opacityRamp > 0 && t.opacityRamp <= 0.25)` to the exactness table's loop, and state in the
+>    `Transition` doc that the ramp only ever *starts* slightly transparent, never carries the motion.
+>
+> 5. Name the lookup `lookup(_:)` everywhere, including the Interfaces line, since Tasks 10 and 11 call it.
+> 6. One line of doc on the seam: durations and curve parameters are `Double`, geometry is `CGFloat`, and
+>    the driver (Task 10) owns the conversion.
+
+
 **Files:**
 - Create: `Sources/Unfold/Design/MotionPlan.swift`
 - Create: `Tests/UnfoldTests/MotionPlanTests.swift`
 
 **Interfaces:**
-- Produces: `enum TransitionID`, `enum Curve`, `enum Geometry`, `struct Transition`, `enum MotionPlan { static let all: [Transition]; static func transition(_ id: TransitionID) -> Transition }`
+- Produces: `enum TransitionID`, `enum Curve`, `enum Geometry`, `struct Transition`, `enum MotionPlan { static let all: [Transition]; static func lookup(_ id: TransitionID) -> Transition? }` -- `lookup`, not `transition(_:)`, which is what Tasks 10 and 11 call.
 - Consumed by: Task 9 (geometry), Task 10 (driver), Task 11 (wiring). `MotionPlan` imports Foundation only -- no AppKit -- which is what makes it testable the way `MenuStatus` is.
 
 - [ ] **Step 1: Write the failing tests**
@@ -1486,6 +1584,43 @@ if the band test fails, the duration is wrong, not the band.
 ---
 
 ### Task 9: `MotionGeometry` -- the morph math, both coordinate spaces
+
+> **Amendment (Ruling Z, continued).** The review found the x axis is dead under test: every rect in the
+> specified cases uses `x: 100, width: 300` for both source and target, so `translation.width` is always 0
+> and `scale.width` always 1 -- an implementation that hard-codes both passes all five tests. `paneReveal`
+> and `statusMorph` are exactly the transitions whose horizontal component Task 10 will trust. Apply these
+> changes with Task 9:
+>
+> 1. **Cover the x axis with a real ratio.** Add, alongside the existing cases:
+>
+>    ```swift
+>    func testHorizontalAxisIsNotAssumedIdentity() {
+>        let wide = CGRect(x: 100, y: 200, width: 300, height: 40)
+>        let narrowLeft = CGRect(x: 60, y: 200, width: 150, height: 40)
+>        for flipped in [false, true] {
+>            let morph = MotionGeometry.morph(source: narrowLeft, final: wide, flipped: flipped)
+>            XCTAssertEqual(morph.scale.width, 0.5, "flipped=\(flipped)")
+>            XCTAssertEqual(morph.translation.width, -70, "flipped=\(flipped)")
+>            XCTAssertEqual(morph.translation.height, 0, "flipped=\(flipped)")
+>        }
+>    }
+>    ```
+>    and rename `testScaleIsSourceOverTargetInBothAxes` to something that does not promise the axis it was
+>    only sampling at a degenerate ratio (`testHeightRatioFollowsSourceOverTarget`).
+>
+> 2. **`testEmptyTargetIsRefusedWithIdentity` asserts only `scale`** -- a guard returning identity scale with
+>    a garbage translation passes. Assert the whole value: `XCTAssertEqual(morph, .identity)`, which also
+>    makes `MorphTransform.identity` read by a test rather than only inside production.
+>
+> 3. **Delete the unreachable `isFinite` branch in `clamp`.** With `final.width > 0, final.height > 0`
+>    already guarded, a division cannot produce a non-finite value from real rects; the branch is dead code
+>    that the review correctly says is untestable. Leave the clamp itself (`max(minimumScale,
+>    min(value, 1 / minimumScale))`) and add `XCTAssertEqual(MotionGeometry.minimumScale, 0.02)`, since the
+>    current clamp test's `< 0.05` window would accept 0.04.
+>
+> 4. One line of doc on the seam: this file is `CGFloat` throughout and `MotionPlan` is `Double`; Task 10's
+>    driver owns the conversion.
+
 
 **Files:**
 - Create: `Sources/Unfold/Design/MotionGeometry.swift`
