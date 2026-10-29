@@ -53,11 +53,16 @@ final class ContrastTests: XCTestCase {
                           "light \(light) vs dark \(dark): the same number means appearance was ignored")
     }
 
+    /// Every row the table declares, by name: a label that exists in the shell has to be in the table,
+    /// and a name this list omits is a row nobody is checking. All sixteen now, which includes the two
+    /// entries the list used to leave out -- `pill.statusSymbol`, the red status glyph, and
+    /// `row.triggerDisabled`, the deliberately dimmed trigger of a disabled row.
     func testTableCoversEveryLabelInTheShell() {
         for element in ["caption.trigger", "caption.replacement", "caption.try", "editor.hint",
                         "diagnostics.summary", "diagnostics.result", "diagnostics.section",
-                        "editor.path", "row.preview", "row.trigger", "pill.status", "window.title",
-                        "editor.hintSymbol", "row.disabledSymbol"] {
+                        "editor.path", "row.preview", "row.trigger", "row.disabledSymbol",
+                        "row.triggerDisabled", "pill.status", "pill.statusSymbol", "window.title",
+                        "editor.hintSymbol"] {
             XCTAssertTrue(Contrast.pairs.contains { $0.element == element }, "\(element) is undeclared")
         }
     }

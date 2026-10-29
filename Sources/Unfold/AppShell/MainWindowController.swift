@@ -51,6 +51,9 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     /// The pill's symbol + label, kept so `statusMorph` can animate the surface whose width changes.
     private var statusStack: NSStackView?
     private var statusItem: NSToolbarItem?
+    /// The appearance control, kept so choosing a preference can rewrite *its* tooltip without hunting
+    /// the toolbar for it. Reassigned whenever the toolbar rebuilds the item, same as `statusItem`.
+    private var appearanceItem: NSToolbarItem?
     private var addRemoveItems: [NSToolbarItem] = []
     private var statusTimer: Timer?
     /// The status the pill was last rendered for. `refreshStatus` runs once a second; this is what
@@ -62,6 +65,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     private static let add = NSToolbarItem.Identifier("unfold.add")
     private static let remove = NSToolbarItem.Identifier("unfold.remove")
     private static let pause = NSToolbarItem.Identifier("unfold.pause")
+    private static let appearance = NSToolbarItem.Identifier("unfold.appearance")
     private static let status = NSToolbarItem.Identifier("unfold.status")
     private static let diagnostics = NSToolbarItem.Identifier("unfold.diagnostics")
 
@@ -261,6 +265,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
             return item
         case Self.diagnostics:
             return symbolItem(identifier, "stethoscope", "Show Diagnostics", #selector(toggleDiagnostics(_:)))
+        case Self.appearance:
+            return buildAppearanceItem(identifier)
         case Self.status:
             return buildStatusItem(identifier)
         default:
@@ -309,13 +315,83 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         return item
     }
 
+    /// The appearance override's control.
+    ///
+    /// Three states, with Match System first and reachable from the same control: the failure mode of an
+    /// in-app switch is that a person gets stuck in it, which is exactly what `dark-mode.md` warns about.
+    /// A menu rather than a two-state button for the same reason -- and the menu is a system menu, so it
+    /// picks up the current appearance and its own open animation for free.
+    ///
+    /// **Honest limit:** this changes `NSApp.appearance`, so it reaches Unfold's windows, panels, sheets
+    /// and alerts. The `NSStatusItem` menu is drawn by the system menu bar and follows the *system*
+    /// appearance, not this override -- an app cannot restyle the menu bar. Restated at `apply()`.
+    private func buildAppearanceItem(_ identifier: NSToolbarItem.Identifier) -> NSToolbarItem {
+        // Read once, not twice: the tooltip and the checked entry are the same fact, so they cannot
+        // disagree about which choice is in force even if the defaults change between the two lines.
+        let current = AppearancePreference.read()
+        // `NSMenuToolbarItem`, not a plain `NSToolbarItem`: the SDK's `NSToolbarItem` has **no** `menu`
+        // property any more (the plan's snippet does not compile -- `value of type 'NSToolbarItem' has no
+        // member 'menu'`), and this is the class AppKit provides for an item that opens a menu. It is
+        // still bordered, still takes the same symbol, label and palette label, and still shows the
+        // system menu -- nothing about the control's shape changes.
+        let item = NSMenuToolbarItem(itemIdentifier: identifier)
+        item.label = "Appearance"
+        item.paletteLabel = "Appearance"
+        item.toolTip = current.tooltip
+        item.image = NSImage(systemSymbolName: "circle.lefthalf.filled", accessibilityDescription: "Appearance")
+        item.isBordered = true
+        item.menu = appearanceMenu(current: current)
+        appearanceItem = item
+        return item
+    }
+
+    /// The three choices, with the stored one checked. Internal rather than private only so the checked
+    /// entry can be asserted for **all three** preferences: the item itself reads
+    /// `UserDefaults.standard`, and `swift test` runs in the shared `com.apple.dt.xctest.tool` domain
+    /// (measured), so a test that stored a choice would strand an appearance override in a domain this
+    /// repo does not own. The preference is a parameter here instead, and `buildAppearanceItem` is the
+    /// one production caller.
+    func appearanceMenu(current: AppearancePreference) -> NSMenu {
+        let menu = NSMenu()
+        for preference in AppearancePreference.allCases {
+            let entry = NSMenuItem(title: preference.menuTitle,
+                                   action: #selector(selectAppearance(_:)), keyEquivalent: "")
+            entry.target = self
+            entry.representedObject = preference.rawValue
+            entry.state = preference == current ? .on : .off
+            menu.addItem(entry)
+        }
+        return menu
+    }
+
+    /// Re-points the checkmark on the entry the user picked and names it in the tooltip, **without
+    /// rebuilding the menu**: the entries keep their object identity, so a menu that is already open
+    /// cannot be swapped out from under the pointer mid-click.
+    ///
+    /// Split out of `selectAppearance(_:)` because the two statements above it persist and apply -- the
+    /// `UserDefaults.standard` write `swift test` must not make -- while this one touches no defaults and
+    /// is therefore the half that gets asserted.
+    func refreshAppearanceSelection(_ sender: NSMenuItem, preference: AppearancePreference) {
+        sender.menu?.items.forEach { $0.state = $0 === sender ? .on : .off }
+        appearanceItem?.toolTip = preference.tooltip
+    }
+
+    @objc private func selectAppearance(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let preference = AppearancePreference(rawValue: raw) else { return }
+        preference.write()
+        preference.apply()
+        refreshAppearanceSelection(sender, preference: preference)
+        refreshStatus()
+    }
+
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [.toggleSidebar, .sidebarTrackingSeparator, Self.add, Self.remove,
-         .flexibleSpace, Self.pause, Self.status, Self.diagnostics]
+         .flexibleSpace, Self.pause, Self.appearance, Self.status, Self.diagnostics]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.toggleSidebar, .sidebarTrackingSeparator, Self.add, Self.remove, Self.pause,
+        [.toggleSidebar, .sidebarTrackingSeparator, Self.add, Self.remove, Self.pause, Self.appearance,
          Self.status, Self.diagnostics, .flexibleSpace, .space]
     }
 
@@ -708,13 +784,22 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
 
 /// The window-level line `selectionMorph` travels from a sidebar row to the editor's trigger field
 /// (Ruling AG). It fills its bounds with the semantic separator colour -- the same colour the
-/// pane-hosted proxy used, so it re-resolves on appearance change and spends no new colour -- draws
-/// nothing while hidden, and its `hitTest` returns nil so an overlay covering the whole window can
-/// never eat a click.
+/// pane-hosted proxy used, so it spends no new colour -- draws nothing while hidden, and its `hitTest`
+/// returns nil so an overlay covering the whole window can never eat a click.
 ///
-/// Owned by `MainWindowController` because its two rects live in different panes; internal rather
-/// than private only so the overlay tests can read the real view's geometry.
-final class SelectionOverlayLineView: NSView {
+/// **The colour resolves per draw, and a flip triggers that draw.** Measured in-process
+/// (`AppearanceFlipTests`, macOS 27.2): a forced paint with the view in aqua fills
+/// `separatorColor` as black α0.102 and the same view in darkAqua as white α0.122 -- the components the
+/// colour resolves to inside each named appearance -- and one run-loop pass after `NSApp.appearance`
+/// changes the view has painted again, with an idle drain painting zero times in between. So no
+/// `viewDidChangeEffectiveAppearance` override is needed: an appearance flip mid-morph re-resolves the
+/// line on the repaint AppKit already schedules.
+///
+/// Owned by `MainWindowController` because its two rects live in different panes; internal rather than
+/// private only so the overlay tests can read the real view's geometry, and not `final` only so
+/// `AppearanceFlipTests` can count `draw(_:)` calls through a subclass that forwards to `super` -- the
+/// drawing measured stays this implementation's.
+class SelectionOverlayLineView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
     override func draw(_ dirtyRect: NSRect) {

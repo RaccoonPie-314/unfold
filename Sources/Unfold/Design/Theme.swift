@@ -61,6 +61,10 @@ enum AppearancePreference: String, CaseIterable {
     /// App-level rather than window-level, so the prompt panel, alerts and sheets cannot disagree with
     /// the main window. `NSAppearance(named:)` is failable, and a name that fails to resolve must fall
     /// back to the system rather than leave the previous appearance stuck.
+    ///
+    /// **Honest limit:** this reaches Unfold's windows, panels, sheets and alerts -- and nothing else.
+    /// The `NSStatusItem` menu (`StatusItemController`) is drawn by the system menu bar and follows the
+    /// *system* appearance, not this override; an app cannot restyle the menu bar.
     func apply() {
         guard let appearanceName, let appearance = NSAppearance(named: appearanceName) else {
             NSApp.appearance = nil
@@ -68,4 +72,20 @@ enum AppearancePreference: String, CaseIterable {
         }
         NSApp.appearance = appearance
     }
+}
+
+/// The words the `unfold.appearance` toolbar control shows. The raw values these are built from are
+/// pinned by `ThemeTests.testPersistedContractIsPinned`; the three titles are the contract the user
+/// reads, so they are spelled once, here, in the order that keeps the system default reachable.
+extension AppearancePreference {
+    var menuTitle: String {
+        switch self {
+        case .system: return "Match System"
+        case .light: return "Light"
+        case .dark: return "Dark"
+        }
+    }
+
+    /// The toolbar item's tooltip, naming the choice currently in force.
+    var tooltip: String { "Appearance — \(menuTitle)" }
 }

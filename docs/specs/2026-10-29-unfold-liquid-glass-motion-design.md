@@ -145,7 +145,10 @@ small:
 - A toolbar item (`unfold.appearance`) whose symbol is `circle.lefthalf.filled`, opening a three-item
   `NSMenu`: **Match System**, **Light**, **Dark**. A menu rather than a two-state button because the
   system default must remain reachable from the same control -- the failure mode of an in-app switch
-  is that a person gets stuck in it.
+  is that a person gets stuck in it. **Correction found while building it:** the item is an
+  `NSMenuToolbarItem`, not a plain `NSToolbarItem` -- the macOS 27 SDK's `NSToolbarItem` has no `menu`
+  property at all, so the shape this section first spelled does not compile. Same symbol, same label,
+  same bordered look; `NSMenuToolbarItem` is the class AppKit provides for an item that opens a menu.
 - The current choice is marked with a checkmark, and the item's `toolTip` names it.
 - The menu is a system menu: it picks up the current appearance and its own open animation for free.
 - Persisted in `UserDefaults` under `unfold.appearancePreference` (`system` / `light` / `dark`),
@@ -153,6 +156,13 @@ small:
 - Applied by setting `NSApp.appearance` to `NSAppearance(named: .aqua)` / `.darkAqua`, or back to
   `nil` for Match System. App-level rather than window-level, so the prompt panel, alerts and sheets
   match the main window instead of disagreeing with it.
+- **Nothing in the shell needs an appearance observer** (measured, `AppearanceFlipTests`): a semantic
+  colour resolved inside `draw(_:)` re-resolves for that draw -- the window-level selection line paints
+  `separatorColor` as black α0.102 in aqua and white α0.122 in darkAqua, exactly what each named
+  appearance resolves to -- and flipping `NSApp.appearance` schedules that redraw itself, landing on the
+  next display pass (an idle drain repaints 0 times; a real flip 1; an assignment that changes nothing
+  effective 0). So the override needs no `viewDidChangeEffectiveAppearance` invalidation anywhere, and
+  none was added on belief.
 - **Honest limit, stated rather than discovered later:** the `NSStatusItem` menu is drawn in the
   system menu bar and follows the *system* appearance, not this override. An app cannot restyle the
   menu bar. The override therefore changes Unfold's windows, panels and alerts only.
