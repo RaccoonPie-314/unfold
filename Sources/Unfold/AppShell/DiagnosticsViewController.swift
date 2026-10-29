@@ -65,8 +65,7 @@ final class DiagnosticsViewController: NSViewController {
 
         let stack = NSStackView(views: [
             section("Diagnostics"), summaryLabel,
-            Glass.container(Glass.wrap(buttonCluster, cornerRadius: Theme.Radius.card, padding: 8)),
-            resultLabel,
+            Glass.wrap(buttonCluster, cornerRadius: Theme.Radius.card, padding: 8), resultLabel,
         ])
         stack.orientation = .vertical
         stack.alignment = .width
