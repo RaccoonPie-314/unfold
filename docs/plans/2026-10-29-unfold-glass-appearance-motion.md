@@ -1762,6 +1762,39 @@ the math, do not adjust the expectation.
 
 ### Task 10: `Motion` -- the only Core Animation in the shell, and the probe that measures it
 
+> **Amendment (Ruling AC), decided from Task 10's review -- four defects, three introduced by the task itself.**
+> 1. **A spring cannot have two clocks.** `Curve.spring(damping:response:)` set stiffness from `response`
+>    (`k = 4/response²`) while `Motion` clipped the animation to `transition.duration`. With `damping 0.85`
+>    and `response 0.28` the settling time is ≈ **0.66 s** against a 0.26 s duration, so every spring ended
+>    with a ~17 pt pop -- which the first driver test then asserted as correct. **Removed: `response`.**
+>    `Curve.spring(damping:)` only; the driver derives stiffness so that `settlingDuration ≈ duration`,
+>    because the perceived 150-320 ms band is the contract and a spring that cannot settle inside it is not
+>    usable. Update Task 8's exactness table and spring-band test to match; assert
+>    `spring.settlingDuration <= duration + 0.01` where the data is checked, not where it is used.
+> 2. **An interrupted morph killed its interruption.** `removeAnimation(forKey:)` left the *previous*
+>    `CATransaction` completion armed, and when Core Animation retired it, it removed whatever animation now
+>    held that key and fired the old `completion?()`. Guard by identity: remove and call completion only if
+>    `layer.animation(forKey:) === self.animation`. Pressing **Motion probe** twice is now safe, which is why
+>    the live check for it can be retired from the list.
+> 3. **`flipped` was read from the wrong view.** `view.frame` -- the `final` handed to `MotionGeometry` -- is
+>    expressed in the **immediate superview's** space, so the input is `view.superview?.isFlipped ?? false`.
+>    The `enclosingScrollView?.documentView` branch picked a different space entirely and was dead code for
+>    the only host ever probed (the diagnostics cluster sits in a glass view inside a plain split item, with
+>    no scroll view). The sign for a flipped container is still **unmeasured**, so Task 10 must add one
+>    flipped fixture (`NSScrollView` with a flipped `documentView`, or an `NSTableRowView`) and assert the
+>    **sign** of `ty`; if the measurement says `MotionGeometry`'s ternary is backwards, the fix belongs in
+>    `MotionGeometry`, not in the driver's guess.
+> 4. **The driver test could still skip on a broken animation.** `presentation()` is nil when nothing is in
+>    flight, so "attaches nothing" landed in `XCTSkip`. Assert immediately after the morph that the layer
+>    actually carries the `unfold.morph` key, so a skip can only mean "attached, but no render cycle".
+>
+> Also ruled as **carried, not fixed here**: the probe measures the same zero-height-below-the-rect geometry
+> for all five transitions, so `.growFromEdge`'s horizontal shape is never exercised and `Motion.morph` reads
+> no `geometry` at all (Ruling C's consequence) -- Task 11 gives each transition its own real source rect, and
+> that is where the coverage arrives. `preparedLayer` setting `wantsLayer` as a side effect of animating, and
+> the test window being ordered out rather than closed, are deferred to the final review.
+
+
 **Files:**
 - Create: `Sources/Unfold/Design/Motion.swift`
 - Create: `Sources/Unfold/AppShell/MotionProbe.swift`
