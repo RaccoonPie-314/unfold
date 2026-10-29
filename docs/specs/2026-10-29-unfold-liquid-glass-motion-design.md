@@ -88,19 +88,24 @@ on 2026-10-29, not from memory:
 
 ## Architecture
 
-Ten units. `MotionPlan` deliberately imports Foundation only, exactly like `MenuStatus`, so the
-motion table is testable in `Tests/UnfoldTests` without touching a view.
+Eleven shipped units, plus the two Plan 4 adds (`PromptPanelController.swift`,
+`Sources/UnfoldEngine/Prompt.swift`), which are listed here so one architecture covers both plans.
+`MotionPlan` and `MotionGeometry` deliberately import Foundation only, exactly like `MenuStatus`, so the
+motion table and the morph math are testable in `Tests/UnfoldTests` without touching a view.
 
 | Unit | One job | Depends on |
 |---|---|---|
 | `Sources/Unfold/Design/MotionPlan.swift` | The transition table as values: name, duration, curve, geometry kind. | Foundation |
-| `Sources/Unfold/Design/Motion.swift` | Translate one `MotionPlan` entry into Core Animation on layer-backed views; provide the FLIP helper and the retarget-and-stop rules. | MotionPlan, QuartzCore, AppKit |
+| `Sources/Unfold/Design/Motion.swift` | Translate one `MotionPlan` entry into Core Animation on layer-backed views. `Motion.morph(_:source:transition:completion:)` is the only code that touches a `CAAnimation`, and it retargets whatever is in flight instead of queueing one. There is deliberately **no** `Motion.stop` (Ruling E): removing the in-flight animation on the next target *is* the stop, and nothing else calls one until Plan 4's panel dismissal asks for it. The FLIP helper is **not** here -- it is the Foundation-only `MotionGeometry.swift` below, plus the source-pose helpers (`insertionGap`, `collapseGap`, `revealEdge`) the production call sites and `MotionProbe` share. | MotionPlan, MotionGeometry, QuartzCore, AppKit |
+| `Sources/Unfold/Design/MotionGeometry.swift` | Pure rect math: two rects → scale + centre displacement (`MorphTransform`), anchor-agnostic by design because `Motion` reads the real layer's anchor. Foundation only, so the morph math is assertable without a view. | Foundation |
 | `Sources/Unfold/Design/Theme.swift` | Corner radii, spacing scale, type scale, the appearance-preference enum and its persistence. | AppKit |
-| `Sources/Unfold/Design/Glass.swift` | `wrap(_:cornerRadius:padding:interactive:)` and a container for grouped controls. The `tint:` parameter is deleted: no call site uses it, and color on glass is a budget spent only on status symbols. | `NSGlassEffectView` |
-| `Sources/Unfold/AppShell/SidebarViewController.swift` | Source list, filter, selection landing, row insert/remove motion, `ComboRowView`. | Theme, Motion |
+| `Sources/Unfold/AppShell/Glass.swift` | `wrap(_:cornerRadius:padding:interactive:)` and `windowBackground()`. The `tint:` parameter is deleted: no call site uses it, and color on glass is a budget spent only on status symbols. **There is no container** -- the `NSGlassEffectContainerView` this section first specified was withdrawn during execution (Ruling V), and the file lives in `AppShell/` because both of its functions build views, not tokens. | `NSGlassEffectView` |
+| `Sources/Unfold/Design/Contrast.swift` | The `(element, text color, backing, floor)` table and the WCAG math that reads it. It **certifies**; the panes do not read their colours through it (Ruling AJ9 -- routing them through a lookup is Plan 4's). | AppKit |
+| `Sources/Unfold/Design/SelectionOverlayLineView.swift` | The shell's only custom-drawn view: the 1 pt separator line `selectionMorph` travels, `separatorColor` filled, `hitTest` nil so an overlay over the window cannot eat a click. In `Design/` because that is where this spec puts drawing (Ruling AJ2); the *instance* is owned by the coordinator, whose two rects live in different panes. | AppKit |
+| `Sources/Unfold/AppShell/SidebarViewController.swift` | Source list, filter, selection landing, row insert/remove motion, `ComboRowView`. | Theme, Motion, MotionGeometry |
 | `Sources/Unfold/AppShell/EditorViewController.swift` | The editor form, the commit-as-you-type paths, the hint line. Moved from `MainWindowController` verbatim. | Theme, Motion |
 | `Sources/Unfold/AppShell/DiagnosticsViewController.swift` | The counters block, the glass test-button cluster, the test result line. | Theme, Glass |
-| `Sources/Unfold/AppShell/MainWindowController.swift` | Window, toolbar, split assembly, appearance toggle, cross-pane wiring, the combo model path, and the diagnostics actions the responder chain reaches. Lands near **570 lines after Tasks 3-5, not the ~150 first written here** -- that number was arithmetic that never fitted: the plan keeps `mutate`/`apply`/`addCombo`/`deleteCombo` and eight `@objc` actions on this type, so removing the three panes (963 → 568) is the whole reachable thinning. Splitting the toolbar delegate into a same-type extension file would move code without moving a responsibility, and is deliberately not done. | the four panes |
+| `Sources/Unfold/AppShell/MainWindowController.swift` | Window, toolbar, split assembly, appearance toggle, cross-pane wiring, the combo model path, and the diagnostics actions the responder chain reaches. **Measured 798 lines at the tip of this pass, not the "near 570" this row first claimed**: Task 5 did land it at 568, then Tasks 10-12 added 242 lines of cross-pane orchestration -- the three morphs, the shared status vocabulary, the window-level overlay, the appearance item -- reaching 810 at Ruling AJ2's review, and this fix wave then took 12 lines back out (the dead `addRemoveItems` surface deleted, and the shell's only custom-drawing class `SelectionOverlayLineView` moved into `Design/`) to land at 798 -- none of which the row's own "570" arithmetic ever counted. Ruling T's decision stands, and Ruling AJ2 upholds it while overturning only the number: splitting the toolbar delegate into a same-type extension file would move code without moving a responsibility, and is deliberately not done. | the four panes |
 | `Sources/Unfold/AppShell/PromptPanelController.swift` | The `NSPanel` that collects placeholder values and hands them back. | `Prompt`, Motion, Theme |
 | `Sources/UnfoldEngine/Prompt.swift` | Pure: `Combo.parts` → ordered `PromptField`s; submitted values → composed `[Part]`; refusal rules. In the engine, not `UnfoldMac`, because composing a replacement is the engine's job and this way `UnfoldCTL` and `Tests/UnfoldEngineTests` reach it without a GUI target. | Foundation, `Template` |
 
@@ -126,8 +131,10 @@ their own, and the count of custom glass surfaces is itself a defect. The two-la
 | Search field, push buttons, pop-up, checkbox | Stock controls | Stock controls. On 26+ these already are the glass treatment; re-skinning them is how the earlier attempts in this repo lost their insets and their selection colors. |
 | Prompt panel | does not exist | Ordinary materials for the fields, one `Glass.wrap` around the action bar -- **not** an `NSGlassEffectContainerView`, which Ruling V removed from the shell for having no second glass descendant to merge. Plan 4 must not re-import it unless the action bar is genuinely two separate glass panes side by side. |
 
-Color budget: the app has one place that spends color -- the status indicator -- and it spends it on the
-symbol, never on the glass and never on the pill's label. `tintColor` is not set on any surface. Because
+Color budget: the app has **two** places that spend color, both of them a glyph rather than a surface -- the
+status indicator and the empty/save-failure hint's `exclamationmark.triangle.fill` (the second is mandated
+under "Contrast conformance" below, which is why the count this section first gave was wrong). Neither spends
+it on glass or on a label: `tintColor` is not set on any surface. Because
 `systemGreen` and `systemOrange` measure 2.22:1 and 2.31:1 over a light window background, only the
 broken states are coloured red; *red means not working, monochrome means working*, and the label is
 `labelColor` in every state so the pill reads over a bright or a dark desktop alike.
@@ -170,9 +177,13 @@ small:
 **Contrast is a test, not an opinion.** `Tests/UnfoldTests/ContrastTests.swift` resolves every
 (text color, backing color) pair under both `.aqua` and `.darkAqua`, **composites the label's alpha
 over the backing** -- which the measurement above proved is not optional -- and asserts the floor the
-HIG sets: ≥4.5:1 for body and caption text up to 17 pt, ≥3:1 for symbols and large text. The pairs
-are enumerated from one table the views read from, so a new label has to be added to the table to
-render at all.
+HIG sets: ≥4.5:1 for body and caption text up to 17 pt, ≥3:1 for symbols and large text. The pairs come
+from one table that the **tests certify**, both ways: `testTableCoversEveryLabelInTheShell` names every
+label and asserts `Contrast.pairs.count` equals the number of names it lists, so a row the list omits and a
+row nobody added are both failures. What the table does *not* do is drive the views -- no pane reads a colour
+out of it, each sets its own semantic `NSColor`, and keeping the two in step is a review obligation rather
+than a mechanism (Ruling AJ9, which rejected the `Contrast.color(for:)` refactor and deferred it to Plan 4,
+the pass where new labelled elements actually arrive).
 
 **Contrast conformance, given the measured numbers.** Light mode misses the floor in three places, so
 this pass changes what carries the hierarchy:
@@ -191,8 +202,10 @@ this pass changes what carries the hierarchy:
   states, `labelColor` for `listening` and `paused`. Writing the contrast table found this -- green at
   2.22:1 and orange at 2.31:1 fail even the 3:1 graphic floor in Light, so a coloured "Ready" glyph would
   have been a faint smudge on the appearance most Mac users still have. Colouring it only in Dark would
-  give the app two identities, so monochrome is chosen in both. `MenuStatus` already decides symbol and
-  text together, and the same table now feeds both surfaces.
+  give the app two identities, so monochrome is chosen in both. `MenuStatus` decides symbol and text
+  together from one table, and that table feeds both surfaces -- but only in the sense that both read the
+  *same decision*: the pill renders the symbol, its colour and `shortText`, while the menu-bar item renders
+  `text` and nothing else. There is no glyph and no status colour in the `NSStatusItem` menu.
 - No custom color is invented. The alternative -- a dynamic `systemGreen` darkened until it clears 3:1
   -- would put a hand-tuned RGB in the shell, and `dark-mode.md` is explicit that hardcoded values are
   the thing to avoid. If that trade is ever wanted, it is a separate decision with its own numbers.
@@ -205,25 +218,49 @@ Two pairs a unit test cannot decide, so they are measured on pixels instead:
 
 ## Motion
 
-`MotionPlan` is a `[Transition]` where each `Transition` carries `id`, `duration`, a
-`Curve` (`.spring(damping:response:)` or `.easeOut(controlPoints:)`) and a `Kind`
-(`.scale(from:to:)`, `.translate`, `.morph`, `.positionCrossfade`). `Motion.run(_:)` is the only code
-that touches Core Animation.
+`MotionPlan` is a `[Transition]` where each `Transition` carries `id`, `duration`, a `Curve`
+(`.spring(damping:)` -- **one** knob, because the transition's `duration` *is* the settle time and the
+stiffness is derived to fit it (Ruling AC #1) -- or `.easeOut(x1:y1:x2:y2:)`) and a `Geometry`
+(`scaleFromGap`, `collapseToGap`, `growFromEdge`, `positionCrossfade`, `symbolMorph`). There is no `Kind`
+enum and no `Motion.run(_:)`: `Motion.morph(_:source:transition:completion:)` is the only code that touches
+Core Animation, and the FLIP helper is a separate Foundation-only unit -- `MotionGeometry.morph(source:final:)`
+turns two rects into a `MorphTransform` of scale plus centre displacement, and `Motion` adds the layer's own
+anchor term before installing it. The source poses a call site *derives* (rather than measures off another
+view) are `MotionGeometry`'s too -- `insertionGap`, `collapseGap`, `revealEdge` -- so the production panes and
+`MotionProbe` cannot drift.
 
 | id | Trigger | Geometry | Duration | Curve |
 |---|---|---|---|---|
-| `rowInsert` | `+`, or a filter that reveals a row | FLIP: the new row unfolds out of a zero-height gap at the baseline above it; neighbours reflow | 260ms | spring, damping 0.85, ~5% overshoot |
-| `rowRemove` | confirmed delete | the row collapses onto its successor and the gap closes | 220ms | easeOut |
-| `selectionMorph` | sidebar selection change | the Trigger caption and field position-crossfade from the row's rect to the form's rect (shared element) | 200ms | easeOut |
+| `rowInsert` | `+`, or a filter that reveals a row | The new row unfolds out of a zero-height gap on **its own baseline** (`MotionGeometry.insertionGap`). It is the only thing that moves: `setRows` calls `reloadData()`, so every row is already at its final position when the pose installs -- the arriving row grows inside a gap that has **already opened**, and the rows below it jump rather than reflow. | 260ms | spring, damping 0.85 -- measured overshoot **0.63% of the step** |
+| `rowRemove` | confirmed delete | The slot the vanished row left collapses onto the **neighbour baseline above it** (`MotionGeometry.collapseGap`). Nothing closes over time either, and the deleted row's own text is never seen shrinking (Ruling AH): `reloadData()` puts the neighbour into the slot first, so what animates is the row that took the slot's place, collapsing onto the line above it. | 220ms | easeOut |
+| `selectionMorph` | sidebar selection change | A 1 pt `separatorColor` line -- the window-level `SelectionOverlayLineView` -- travels from the sidebar row's rect to the trigger field's centre line, hidden at rest. Neither the Trigger **caption** nor the field itself crossfades: the pane is re-displayed, not animated, and the travelling line is the whole shared element. | 200ms | easeOut |
 | `paneReveal` | stethoscope → Diagnostics | the pane's content grows from the divider edge; the divider itself moves through `NSSplitViewController`'s own animation | 280ms | spring |
-| `statusMorph` | tap state change | SF Symbol replacement animation plus the pill's width springing to fit the new label | 240ms | easeOut |
+| `statusMorph` | tap state change | SF Symbol replacement plus the **wrapped toolbar item view** -- `MainWindowController.statusPill`, the `NSGlassEffectView` AppKit's toolbar sizes -- springing its width to fit the new label, so material and content travel as one object (Ruling AJ7; it used to morph the content stack inside that view, which snapped the box under a springing content) | 240ms | easeOut |
 | `promptPresent` | a placeholder combo fires | the panel scales out of the caret's screen rect | 220ms | spring |
 | `promptDismiss` | confirm or cancel | reverse into the caret rect | 180ms | easeOut |
+
+**Why the row motion is only half a motion, and what would settle it (open decision for the live pass).**
+The two row rows above are what ships; "neighbours reflow" and "the gap closes" are what this table first
+promised, and Ruling AJ6 ruled that the spec describes reality rather than the promise being kept by faking a
+translate in code nobody has seen on screen. The upgrade is a real motion capability: either drive the list
+with `insertRows`/`removeRows` so AppKit animates the reflow, or give each neighbour its own inverted
+per-row translate FLIP. **The one observation that decides it:** add a row in the middle of a real list and
+watch the rows *below* it. If they jump and that reads wrong to you, do the upgrade; if it reads as a row
+arriving, this table stays as written.
+
+**Why 0.63% is the overshoot and ~5% is gone.** The pass adopted the measured number: at ζ = 0.85 a step
+peaks at `exp(-πζ/√(1-ζ²))` = 0.63% of itself (0.25 pt on a 40 pt row), which is why the motion driver's band
+is "fails above 1%". A ~5% overshoot needs ζ ≈ 0.69, and Core Animation reports a settling time of
+`≈7.87/σ` at 2% -equivalent thresholds -- about 1.97× the textbook `4/σ` -- so lowering ζ pushes
+`settlingDuration` past the transition's 150-320 ms duration, the clip lands mid-ramp, and the layer jumps the
+rest of the way. One clock per spring was the correction that mattered more than the bounce.
 
 Rules, all of them derived from a correction the user already made:
 
 - **Geometry carries the motion.** Opacity is used only as an anti-flash ramp inside the first ~20%
-  of a timeline. `MotionPlanTests` asserts that no transition's `Kind` is opacity-only.
+  of a timeline. `MotionPlanTests` asserts every transition's `Geometry` is one of the five shipped cases and
+  that the type cannot name a fade-only transition at all; since Ruling AJ4, `MotionProbe` also *reads*
+  `Geometry` to pick each transition's source pose, so the enum is no longer declared-and-unread.
 - **No front-loaded curves on short transitions.** `cubic-bezier(0.33, 1, 0.68, 1)` at 200-300ms,
   not `(0.22, 1, 0.36, 1)`: the earlier curve had spent 76% of its change by 45ms and read as
   nothing. The test asserts every duration lands in 150-320ms.
@@ -284,18 +321,19 @@ That filter is replaced by two rules in the same function:
   to register it is what makes a half-built combo harmless.
 
 `inactivePlaceholderCount` is therefore no longer a count of "waiting for UI that does not exist". It
-becomes `emptyComboCount`, and the two places that print it change together:
-`MainWindowController.swift:763` ("N need the prompt UI" → "M empty, nothing to insert") and
-`StatusItemController.swift:146`. Keeping the counter rather than deleting it is deliberate -- it is
+becomes `emptyComboCount`, and the two places that print it change together, named by method because line
+numbers in a spec go stale the moment a pane moves: `MainWindowController.refreshStatus()` (the diagnostics
+summary line "N live, M need the prompt UI") and `StatusItemController.rebuild(_:)` (the menu's
+"N inactive (need the prompt UI)" note). Keeping the counter rather than deleting it is deliberate -- it is
 the sentinel that shows a combo the user can see is not reachable from the keyboard.
 
 This closes the last of the two open items from the 2026-10-27 live verification. The other,
 post-delete selection, is fixed in the next section.
 
-**Selection after delete.** `reloadRows` currently selects row 1 when the selected combo is gone, so
-two fast deletes with the alert unread destroy the wrong combo. The sidebar keeps the deleted row's
-index and selects `min(index, count-1)` -- the neighbour -- which is also what `rowRemove`'s collapse
-target needs to know. Both are the same change.
+**Selection after delete.** The base `reloadRows` landed the selection on **row 0** when the selected combo
+was gone, so two fast deletes with the alert unread destroyed the wrong combo. The sidebar now keeps the
+deleted row's own index and selects `min(index, count-1)` -- the neighbour -- which is also what `rowRemove`'s
+collapse target needs to know. Both are the same change.
 
 Panel layout: captions left of fields, `⌘↩` confirm, Escape cancel, Tab order top-to-bottom, the
 action bar in one glass container. The panel is not resizable, is `.floating` level so it survives
@@ -304,10 +342,12 @@ the app being an accessory, and closes on Escape regardless of focus.
 ## Menu bar and alerts
 
 The `NSStatusItem` menu keeps its system-drawn appearance (see the honest limit under Appearance).
-What changes is the vocabulary: the menu's status line and the window's status pill use the same
-symbol name and the same `NSColor` for a given `MenuStatus`, produced from one table so they cannot
-drift apart. The delete confirmation keeps its system sheet slide, and its `informativeText` names
-the file it writes, which it already does.
+What changes is the vocabulary: the menu's status line and the window's status pill are two renderings of
+one `MenuStatus` decision, so they cannot disagree about whether expansion can happen. They do not share a
+symbol or a colour -- the menu renders `text` and nothing else, and the symbol, its `emphasisColor` and the
+shorter `shortText` are the pill's (this section first claimed the two surfaces used the same symbol name and
+the same `NSColor`, which the shipped menu does not do). The delete confirmation keeps its system sheet
+slide, and its `informativeText` names the file it writes, which it already does.
 
 ## Error handling
 
@@ -322,9 +362,10 @@ the file it writes, which it already does.
 
 ## Testing
 
-- `MotionPlanTests` (`Tests/UnfoldTests`) -- Foundation-only: seven ids present, every `Kind`
-  geometric, durations in 150-320ms, no curve steeper than the approved control points, springs
-  positive. This is where "native animation for every component" becomes a checkable claim.
+- `MotionPlanTests` (`Tests/UnfoldTests`) -- Foundation-only: seven ids present, every `Geometry` one of the
+  five shipped cases (a fade-only transition cannot be named), durations in 150-320ms, no curve steeper than
+  the approved control points, springs positive. This is where "native animation for every component" becomes
+  a checkable claim.
 - `ContrastTests` (`Tests/UnfoldTests`) -- the color-pair table resolved under `.aqua` and
   `.darkAqua`; ≥4.5:1 text, ≥3:1 symbols.
 - `PromptTests` (`Tests/UnfoldEngineTests`) -- one field per segment in order; options carried;
@@ -335,7 +376,7 @@ the file it writes, which it already does.
   registration question, not a routing one, so it is covered in `ExpansionCoordinatorTests`: an empty
   combo never appears in the index at all.
 - Store and rollback tests from the 2026-10-27 round stay green, plus a test that post-delete
-  selection lands on the neighbour rather than row 1.
+  selection lands on the neighbour rather than on row 0, which is where the base landed.
 - The existing suite must pass unchanged: **186 test methods, 0 failures** (71 `UnfoldEngineTests`,
   106 `UnfoldMacTests`, 9 `UnfoldTests`), measured on 2026-10-29 rather than recalled. `swift test`
   prints an `Executed N tests` line per target, so grepping for one number reports green even when a
@@ -352,8 +393,12 @@ the file it writes, which it already does.
 PID, because both the tap and the materials are the parts a unit test cannot reach:
 
 1. **`MotionProbe`, measured in-process.** A Diagnostics button runs each transition on a real view and
-   logs the layer's *presentation* bounds and transform offset at eight timestamps to the launch log, so
-   motion is reported as numbers -- a transition that logs one size eight times is not animating. Chosen
+   logs the layer's *presentation* bounds, scale and transform offset at eight timestamps to the launch log,
+   so motion is reported as numbers -- a transition that logs one size eight times is not animating. Each one
+   is run from **its own source pose**, chosen by the `Geometry` the plan declares for it and taken from the
+   same `MotionGeometry` helper the production call site uses (Ruling AJ4); the probe used to hand all five the
+   same zero-height gap, which made `paneReveal`'s and `statusMorph`'s numbers describe a grow neither of them
+   performs. Chosen
    over a window-capturing shell script because it samples the animation's own intermediate state rather
    than a screenshot that may land between frames, and because it does not have to raise a window to read
    one. `promptPresent` and `promptDismiss` are excluded until Plan 4 builds the panel they morph from.

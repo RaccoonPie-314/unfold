@@ -4,6 +4,18 @@
 
 **Architecture:** Three layers. `Design/` holds the tokens, the appearance preference and motion as *pure values* (`MotionPlan`, `MotionGeometry`) so they are assertable without a view; `Motion.swift` is the single thin place that touches Core Animation. The shell keeps its stock AppKit controls -- on macOS 26+ those already render the real material -- and hand-placed glass is confined to one `NSGlassEffectContainerView` holding the two floating control clusters. The 963-line `MainWindowController` becomes three pane controllers plus a thin coordinator that owns the model.
 
+> **Amended by Ruling V (decided during Task 6's execution) and restated here by the final review's
+> cleanup.** The container in that paragraph was withdrawn and never shipped:
+> `NSGlassEffectContainerView` merges *descendant glass views*, and each cluster has exactly one
+> `Glass.wrap`, so it would have merged nothing while elevating z-order. What ships is two independent
+> `Glass.wrap` calls plus `Glass.windowBackground()` -- and `Glass.swift` lives in `Sources/Unfold/AppShell/`,
+> not `Design/`, because both of its functions build views. Two more clauses in the same paragraph are also
+> not what shipped: there is no `Glass.container` (grep for it in `Sources/` is empty), and the coordinator is
+> not thin -- it measures **798** lines at the tip of this pass (810 at Ruling AJ2's review of `43a527c`, before
+> this fix wave moved the `SelectionOverlayLineView` class into `Design/` and deleted the dead `addRemoveItems`
+> surface out of it), which the spec's architecture row now says
+> (Ruling AJ2 upheld Ruling T's decision not to split it further, and overturned only the number).
+
 **Tech Stack:** Swift 6.4 (SwiftPM, `swift-tools-version: 6.2`), AppKit, QuartzCore (`CASpringAnimation`, `CATransform3D`), XCTest, `vtool`/`screencapture` for verification. No third-party dependencies.
 
 **Spec:** `docs/specs/2026-10-29-unfold-liquid-glass-motion-design.md` -- read it with this plan. Where the two disagree, the spec's measured numbers win; three corrections were already folded back into it after measuring (see "Corrections found while planning").
@@ -69,7 +81,7 @@ Created:
 | `Sources/Unfold/Design/Theme.swift` | Type, radius, spacing tokens; `AppearancePreference` and its persistence |
 | `Sources/Unfold/Design/Contrast.swift` | The (element, text color, backing, floor) table and the WCAG math that reads it |
 | `Sources/Unfold/Design/MotionPlan.swift` | The transition table as values. Foundation only, no AppKit |
-| `Sources/Unfold/Design/MotionGeometry.swift` | Pure rect math: two rects + flippedness → scale/translation. Foundation + CoreGraphics |
+| `Sources/Unfold/Design/MotionGeometry.swift` | Pure rect math: two rects → scale/translation. Foundation + CoreGraphics. *(No `flippedness` input -- Ruling AE deleted the parameter; see Task 9. The three source-pose helpers `insertionGap` / `collapseGap` / `revealEdge` were added here by Ruling AJ4 so the panes and `MotionProbe` share one spelling.)* |
 | `Sources/Unfold/Design/Motion.swift` | The only Core Animation in the shell: apply a plan entry to a layer-backed view |
 | `Sources/Unfold/AppShell/SidebarViewController.swift` | Source list, filter, row diffing, row motion, `ComboRowView` |
 | `Sources/Unfold/AppShell/EditorViewController.swift` | The editor form, commit paths, hint line, "Try it" field, path label |
@@ -99,7 +111,7 @@ deprecated `selectionHighlightStyle = .sourceList` assignment, and every macOS 2
 | 3 | Extract `SidebarViewController` | list behaves identically, in its own file |
 | 4 | Extract `EditorViewController` | editor behaves identically; `+`/delete still land |
 | 5 | Extract `DiagnosticsViewController`, thin the controller | `MainWindowController` ≤ ~200 lines |
-| 6 | Glass container + interactive glass | two clusters merge into one slab, press response visible |
+| 6 | ~~One glass container~~ Interactive glass on the existing wraps -- **the container was withdrawn by Ruling V** | press response visible; one `Glass.wrap` per cluster, no merged slab |
 | 7 | `Contrast.swift` + `ContrastTests` + the color moves | Light mode meets the floor, asserted |
 | 8 | `MotionPlan.swift` + `MotionPlanTests` | the seven transitions exist as data |
 | 9 | `MotionGeometry.swift` + `MotionGeometryTests` | morph math proven for both coordinate spaces |
@@ -688,6 +700,21 @@ Changed: `Sources/Unfold/AppShell/SidebarViewController.swift` (new),
 
 ### Task 4: Extract `EditorViewController`
 
+> **Amended by Ruling AG, decided from Task 11b's review, and restated here by the final review (Ruling
+> AJ10).** Everything this task produces about a **proxy view** is withdrawn. `editor.triggerFieldProxy` -- the
+> interface below, the `triggerProxy` code block in Step 2, and Task 5's Step 0 regression test for it -- does
+> not exist in the shipped shell, and `grep -rn triggerFieldProxy Sources/` is empty. The pane-hosted proxy
+> was clipped: the split view's `_NSSplitViewItemViewWrapper` has `masksToBounds == true` (measured), and this
+> morph's start pose is a row-sized bar sitting over the *sidebar*, so the pane cut it and the line popped in
+> at the editor's left edge instead of travelling from the row -- the shared element reduced to an appearance.
+> What shipped instead: the 1 pt `separatorColor` line is a `SelectionOverlayLineView` hosted by the
+> **window's own content view** (the common unclipped ancestor of both panes), owned and morphed by
+> `MainWindowController`, still hidden at rest per Ruling R and still `hitTest`-nil; the class itself lives in
+> `Sources/Unfold/Design/SelectionOverlayLineView.swift`, moved out of the coordinator by Ruling AJ2 because it
+> is the shell's only custom-drawing view. The pane keeps only the
+> accessor the morph needs -- `triggerFieldFrameInWindow`. `EditorViewController` is otherwise exactly as
+> specified here.
+
 **Files:**
 - Create: `Sources/Unfold/AppShell/EditorViewController.swift`
 - Modify: `Sources/Unfold/AppShell/MainWindowController.swift` -- remove lines
@@ -711,6 +738,7 @@ Changed: `Sources/Unfold/AppShell/SidebarViewController.swift` (new),
   - `var tryTextView: NSTextView` -- `ConsistencyTest` needs it
   - `var triggerFieldFrameInWindow: CGRect?` -- the destination rect for `selectionMorph` in Task 11
   - `var triggerFieldProxy: NSView` -- the thin view Task 11 morphs instead of the real field
+    *(withdrawn by Ruling AG before it ever shipped; the pane exposes `triggerFieldFrameInWindow` only)*
 
 - [ ] **Step 0: Carry the three follow-ups Task 3's review collected**
 
@@ -855,6 +883,11 @@ var triggerFieldFrameInWindow: CGRect? {
 var triggerFieldProxy: NSView { triggerProxy }
 ```
 
+*(Step 2's `triggerProxy` property and this accessor were withdrawn by Ruling AG before they could ship -- the
+pane-hosted line was clipped by the split view's wrapper. `SelectionOverlayLineView` in
+`MainWindowController`'s window-level overlay carries the same three properties: `separatorColor` fill,
+nothing while hidden, `hitTest` nil. See Task 4's callout.)*
+
 - [ ] **Step 3: Compile, test, live check**
 
 ```bash
@@ -899,6 +932,9 @@ place instead of spawning a card; `+` then type immediately; delete; run `Self-t
    reachable through the existing `@testable import Unfold` target with no window and no app launch, and it
    fails for exactly the defect that review found. This raises the suite from 192 to 193; the count is a
    floor to add to, never a cap.
+   *(Withdrawn by Ruling AG with the proxy itself -- see Task 4's callout. The equivalent shipped assertion is
+   in `SelectionOverlayTests`: the overlay is installed on the window's content view, ships hidden, and is
+   unhidden only for the length of its own morph.)*
 4. Wire `diagnostics.loadViewIfNeeded()` alongside the sidebar's and editor's, before any assignment to it.
 
 - [ ] **Step 1: Move the pane**
@@ -1327,6 +1363,15 @@ mode on the installed build -- the hierarchy should still be obvious at 11 pt ag
 
 ### Task 8: `MotionPlan` -- the transitions as data
 
+> **Amended by Ruling AC #1, restated by the final review (Ruling AJ10).** `Curve` shipped with **one** spring
+> knob -- `case spring(damping: Double)` -- so every `.spring(damping: 0.85, response: ...)` in the snippets below
+> (the exactness table at item 1, the `Curve` declaration, the `MotionPlan.all` rows and the spring-band test
+> that reads `let response` out of the curve) is withdrawn, and the doc comment's "`damping` 0.85 gives roughly
+> a 5% overshoot" is wrong: measured at ζ = 0.85 the overshoot is **0.63%** of the step, and 5% needs ζ ≈ 0.69,
+> which cannot settle inside the 150-320 ms band. The transition *duration* is the settle time and the driver
+> derives the stiffness that makes `CASpringAnimation.settlingDuration` land on it. See Task 10's callout and
+> `MotionDriverTests.testEverySpringSettlesInsideItsOwnDuration`.
+
 > **Amendment (Ruling Z), decided from Task 8/9's review.** The review found that the test code specified
 > below is weak in four ways, and it is the plan's code being wrong, not the pass's. Apply these
 > replacements to `MotionPlanTests.swift` as part of Task 8:
@@ -1635,6 +1680,29 @@ if the band test fails, the duration is wrong, not the band.
 > 4. One line of doc on the seam: this file is `CGFloat` throughout and `MotionPlan` is `Double`; Task 10's
 >    driver owns the conversion.
 
+> **Amended by Ruling AE, decided from Task 10's measurement.** Three things this task specifies are not what
+> shipped, and one number in the amendment above is wrong.
+> (1) **There is no `flipped:` parameter.** `MotionGeometry.morph(source:final:)` takes two rects and nothing
+> else (the interface, the test cases and the implementation below all still spell the third argument). Task 10
+> measured the claim the parameter rested on and found it backwards: AppKit mirrors a view's flippedness into
+> its layer tree (`isGeometryFlipped` tracks `isFlipped`), the morphing layer's resting `frame` equals the
+> view's `frame` in **both** orientations, and so a `transform` translation already runs along the axis the
+> rects are written on. Negating `dy` for a flipped container started the pose 20 pt on the far side of the
+> resting frame -- the row slid in from below the gap instead of out of it. `MotionDriverTests`
+> `.testAFlippedContainerMovesTheSameWayItsOwnCoordinatesSay` is the measurement, and it fails if the ternary
+> comes back in either direction.
+> (2) **The sign expectations below are the ones that were wrong**, so
+> `testASourceAboveTheTargetPushesOppositeWaysInEachSpace` became
+> `testTheYOffsetIsTheRectGapAsGiven`: a source at a numerically larger `y` is `+60` and one at a numerically
+> smaller `y` is `-60`, in either orientation. Step 4's "if the flipped/unflipped sign test fails the ternary
+> is backwards -- fix the math" was right about the diagnosis and wrong about which math.
+> (3) **`-70` in the amendment's own snippet above is an arithmetic error.** `narrowLeft.midX` is 135 and
+> `wide.midX` is 250, so `translation.width` is **-115**, which is what the shipped test asserts. Ruling Z's
+> point -- cover x with a real ratio -- stands; its number did not.
+> (4) Ruling D, from the same round, is why the driver never converts either: `view.frame` *is* the rect in the
+> superlayer's space, so `MotionGeometry`'s output needs only the layer's anchor term (Ruling AE's second
+> half) and no coordinate handling at all.
+
 
 **Files:**
 - Create: `Sources/Unfold/Design/MotionGeometry.swift`
@@ -1793,6 +1861,34 @@ the math, do not adjust the expectation.
 > no `geometry` at all (Ruling C's consequence) -- Task 11 gives each transition its own real source rect, and
 > that is where the coverage arrives. `preparedLayer` setting `wantsLayer` as a side effect of animating, and
 > the test window being ordered out rather than closed, are deferred to the final review.
+
+> **Amended by Rulings AC, D, E and AJ4, restated here by the final review (Ruling AJ10). The Step 1 code
+> block below is the pre-amendment driver and is *not* what shipped.**
+> (1) **`Curve` has one spring knob** -- `Curve.spring(damping:)`. The block's
+> `case .spring(let damping, let response)` and `spring.stiffness = CGFloat(4 / (response * response))` were
+> deleted by Ruling AC #1: two clocks left every spring truncated with a visible pop. What ships seeds from the
+> textbook `k = (4/(ζ·duration))²` and then corrects against the settle time Core Animation actually reports
+> (`settlingDuration ≈ 7.87/σ` at ζ = 0.85, **1.967×** the textbook `4/σ`), so `settlingDuration` lands on the
+> transition's own duration; `MotionDriverTests.testEverySpringSettlesInsideItsOwnDuration` asserts it for all
+> three springs.
+> (2) **There is no `frameInSuperlayer`.** The `private extension NSView` at the end of Step 1 was deleted
+> (Ruling D): `view.frame` *is* the rect in the superlayer's space, AppKit mirrors flippedness into the layer
+> tree, and an alias that implied a conversion existed was worse than nothing. Same reason the `flipped`
+> argument this block still threads into `MotionGeometry.morph` is gone -- see Task 9's Ruling AE callout.
+> (3) **There is no `Motion.stop(_:)`** (Ruling E), even though the interface list below still produces it.
+> The `removeAnimation(forKey:)` that fires when a new target arrives *is* the stop, and nothing else needs to
+> call one until Plan 4's prompt-panel dismissal asks for it. An exposed stop entry point with no caller is
+> surface, not behaviour.
+> (4) **Ruling AC's "carried, not fixed here" note about the probe is now overturned by Ruling AJ4.** The
+> coverage did not arrive with Task 11 -- Task 11 gave the *call sites* their own source rects while
+> `MotionProbe` went on handing all five the same zero-height full-width gap, so `paneReveal`'s and
+> `statusMorph`'s logged numbers described a vertical grow neither performs. The probe now picks each source
+> from the `Geometry` the plan declares for it, through the same `MotionGeometry` helpers the panes call, and
+> `MotionProbeTests` fails if the five ever collapse back into one.
+> (5) Two AC-carried items that were *not* overturned and are still true of the shipped driver: the completion
+> is guarded by animation **identity** (plus the measured fact that Core Animation retires a finished
+> animation before the transaction block runs, which is why "nothing under the key" also passes), and
+> `preparedLayer` still sets `wantsLayer` as a side effect of animating.
 
 
 **Files:**
@@ -2076,6 +2172,27 @@ with `bitmapImageRepForCachingDisplay` rather than to lengthen the animation.
 
 - [ ] **Step 3: `selectionMorph`, `paneReveal`, `statusMorph`**
 
+> **Amended by Ruling AG (the proxy) and Ruling AJ7 (the pill), decided by the final review.** Two things in
+> this step are not what shipped.
+> (1) **`editor.triggerFieldProxy` does not exist** -- see Task 4's callout for why a pane-hosted proxy was
+> clipped. The code block below ran on `MainWindowController.selectionOverlay`, a `SelectionOverlayLineView`
+> in the **window's content view**, and both rects are converted out of screen space into the overlay's host
+> space before the morph (they cross panes, so they arrive in screen coordinates and `MotionGeometry`
+> compares them against the overlay's own layer space). The `isHidden = false` / restore pairing, the
+> `to != from` refusal and the completion passed to `Motion.morph` rather than chased by a timer are all as
+> written here.
+> (2) **`statusMorph` does not run "on the pill's stack".** The stack is the glass view's own `contentView`,
+> and the pill body the user reads as *the pill* is sized by AppKit's toolbar layout, so morphing the stack
+> sprang content inside a box that snapped -- two objects on two clocks, which this plan's own rule 4 forbids
+> for a control the system already animates. It morphs `MainWindowController.statusPill`, the wrapped
+> `NSGlassEffectView`, and measures its **previous and final frames off that same view**; the deferred read
+> (one main-queue turn, because the toolbar re-measures asynchronously) is unchanged. Measured in-process
+> (`StatusPillMotionTests`): the item view goes 71 → 263 pt in one layout pass with no animation on it or on
+> the `NSToolbarItemViewer` above it, and morphing it interpolates the rendered width with `scale.y` pinned at
+> 1.000.
+> The `.hierarchicalColor` symbol configuration and "do not animate when the value is unchanged" stay as
+> specified; the memo that enforces the second is `lastRenderedStatus`.
+
 `selectionMorph` runs from the controller, because it is the one transition with a source and a target
 in different panes:
 
@@ -2101,7 +2218,9 @@ sidebar.onSelect = { [weak self] id in
 `triggerFieldProxy` is a `NSView` the editor exposes that sits exactly over the trigger field and holds
 nothing but a 1 pt `NSColor.separatorColor` line; morphing a proxy that way keeps the real field from
 re-laying out mid-animation, which is what moved the caret the last time a morph touched an editor
-control.
+control. *(Not what shipped -- Ruling AG replaced this view with the window-level
+`SelectionOverlayLineView` for the clipping reason in Task 4's callout, and kept the reason: the line morphs,
+the field never does.)*
 
 `paneReveal`: the diagnostics pane grows from the divider side when `toggleDiagnostics` flips
 `isCollapsed`, using its own leading edge as the source; keep the split view's own animation and morph
@@ -2367,3 +2486,16 @@ Already folded into the spec; listed here so nobody re-derives them:
 Every code block in Tasks 2, 7, 8, 9, 10 and 12's `MenuStatus` extension was compiled and run in an
 isolated copy of the repo (macOS 27.2, SDK 27.0, Swift 6.4) on 2026-10-29: the package built, and
 204 test methods ran with 0 failures -- the 186 baseline plus the 18 new ones from Tasks 2, 7, 8 and 9.
+
+> **Scoped by the final review (Ruling AJ10), so the sentence above is not read as more than it is.** That run
+> is evidence about the **pre-measurement** code -- the blocks as they were written when the plan was approved.
+> It is not evidence about what shipped: six of those blocks were corrected *during* execution by measurement
+> (Rulings X and Z for Tasks 7-9's table and tests, AC and AE for Task 10's driver and Task 9's `flipped`,
+> AG for Task 4's proxy and Task 11's `selectionMorph`, AJ2-AJ9 for this fix wave), so the compiled-and-run
+> claim applies to the plan's own snapshot, and each superseded block carries an `Amended by ...` callout saying
+> what replaced it. The suite the shipped tree runs against is the one reported per task in this plan plus
+> this fix wave's ten new methods -- **265 methods, 0 failures** (88 `UnfoldTests` / 106 `UnfoldMacTests` /
+> 71 `UnfoldEngineTests`) at the tip of
+> this pass, measured rather than recalled (the ten new `UnfoldTests` methods: seven in `MotionProbeTests`,
+> one in `StatusPillMotionTests`, two landing-count tests in `SidebarRowMotionTests`; `--list-tests | grep -c /`
+> = 265).
