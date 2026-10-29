@@ -34,6 +34,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     private var pauseItem: NSToolbarItem?
     private var statusLabel: NSTextField?
     private var statusSymbol: NSImageView?
+    /// The pill's symbol + label, kept so `statusMorph` can animate the surface whose width changes.
+    private var statusStack: NSStackView?
     private var statusItem: NSToolbarItem?
     private var addRemoveItems: [NSToolbarItem] = []
     private var statusTimer: Timer?
@@ -48,6 +50,10 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     private static let pause = NSToolbarItem.Identifier("unfold.pause")
     private static let status = NSToolbarItem.Identifier("unfold.status")
     private static let diagnostics = NSToolbarItem.Identifier("unfold.diagnostics")
+
+    /// The status pill's glyph size, spelled once: `buildStatusItem` starts with it and `refreshStatus`
+    /// composes the status colour onto the same value instead of re-typing the numbers.
+    private static let statusSymbolSize = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
 
     init(coordinator: ExpansionCoordinator, store: Store) {
         self.coordinator = coordinator
@@ -92,8 +98,10 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         // `reloadRows()`, because that call puts a selection on screen and the controller has to hear
         // about it.
         sidebar.onSelect = { [weak self] id in
-            self?.selectedID = id
-            self?.redisplay()
+            guard let self else { return }
+            self.morphSelectionIntoTriggerField()
+            self.selectedID = id
+            self.redisplay()
         }
         sidebar.onFilter = { [weak self] needle in
             self?.filter = needle
@@ -254,7 +262,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     /// as a legitimate use. The symbol carries the meaning too, so colour is never the only signal.
     private func buildStatusItem(_ identifier: NSToolbarItem.Identifier) -> NSToolbarItem {
         let symbol = NSImageView()
-        symbol.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
+        symbol.symbolConfiguration = Self.statusSymbolSize
         symbol.setContentHuggingPriority(.required, for: .horizontal)
         let text = NSTextField(labelWithString: "…")
         text.font = .systemFont(ofSize: 11, weight: .medium)
@@ -263,6 +271,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         stack.spacing = 5
         statusSymbol = symbol
         statusLabel = text
+        statusStack = stack
 
         let item = NSToolbarItem(itemIdentifier: identifier)
         item.label = "Status"
@@ -427,6 +436,66 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         sidebar.setRows(matching, selecting: selectedID)
     }
 
+    // MARK: - Motion
+
+    /// `selectionMorph` -- the one transition whose source and destination live in different panes, so it
+    /// runs from here: the sidebar row the user just picked is the source, the editor's trigger field is
+    /// the destination, and neither pane can see the other.
+    ///
+    /// It animates the editor's **proxy**, never the field itself. The proxy is a 1 pt separator line
+    /// pinned over the trigger field that participates in no layout of a control, and re-laying out a
+    /// control the user may be typing into is what moved the caret the last time a morph touched an editor
+    /// control. It ships hidden (Ruling R), so it is unhidden for the length of the morph and put back by
+    /// the completion -- and `Motion.morph`'s identity guard makes sure the completion that runs is the one
+    /// belonging to the animation that ended up holding the key, so a fast series of selections hides the
+    /// proxy exactly once, at the end.
+    private func morphSelectionIntoTriggerField() {
+        guard let morph = MotionPlan.lookup(.selectionMorph),
+              let from = sidebar.selectedRowFrame,
+              let to = editor.triggerFieldFrameInWindow,
+              to != from,
+              let host = editor.triggerFieldProxy.superview,
+              let window, window.isVisible else { return }
+        // Both accessors answer in *screen* coordinates, because they cross panes; what the driver needs
+        // is the source in the space the morphing view's own `frame` lives in -- `MotionGeometry.morph`
+        // compares the two rects, so a screen-space source beside a superview-space target would fling the
+        // pose a whole window-height away from the field. Down through the window, then into the host.
+        let source = host.convert(window.convertFromScreen(from), from: nil)
+        let proxy = editor.triggerFieldProxy
+        proxy.isHidden = false
+        Motion.morph(proxy, source: source, transition: morph) { [weak proxy] in
+            proxy?.isHidden = true
+        }
+    }
+
+    /// `statusMorph`: the pill's *width* is the motion -- the label re-measures when the status changes --
+    /// so the morph only runs on a tick that both changed the status (the memo in `refreshStatus` handles
+    /// that) and actually re-measured the pill. Two statuses share `Tap off`, and a status whose symbol
+    /// changes but whose text does not has no geometry to travel, so this returns without animating rather
+    /// than installing an identity→identity clip.
+    ///
+    /// - Parameter previous: the pill stack's frame *before* the label and glyph were rewritten.
+    private func morphStatusPill(from previous: CGRect?) {
+        guard let morph = MotionPlan.lookup(.statusMorph),
+              let stack = statusStack,
+              let previous,
+              stack.window?.isVisible == true else { return }
+        // The pill's width is re-measured by the toolbar, not by the stack: measured here, a synchronous
+        // `layoutSubtreeIfNeeded()` straight after the label change still reported the *old* 43 pt frame,
+        // and the new 188.5 pt one only appeared one main-queue turn later. Morphing onto a rect the view
+        // is about to leave is the jump `Motion` exists to prevent, so the landing rect is read after the
+        // turn that produces it. This defers a *measurement*; the animation still retargets whatever is
+        // in flight, which is `Motion.morph`'s own interrupt behaviour.
+        DispatchQueue.main.async { [weak stack] in
+            guard let stack else { return }
+            let final = stack.frame
+            guard final != previous,
+                  previous.width > 0, previous.height > 0,
+                  final.width > 0, final.height > 0 else { return }
+            Motion.morph(stack, source: previous, transition: morph)
+        }
+    }
+
     // MARK: - Status
 
     private func startStatusTimer() {
@@ -448,15 +517,24 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         // status actually changed, so an unchanged second costs nothing and Task 11's later
         // `statusMorph` can fire off this same inequality without ever animating on a no-op tick.
         if status != lastRenderedStatus {
+            // The pill's frame *before* the rewrite is the morph's source: `statusMorph` is a width
+            // change, and the width that matters is the one the user was looking at a moment ago.
+            let previousFrame = statusStack?.frame
             lastRenderedStatus = status
             statusSymbol?.image = NSImage(systemSymbolName: status.symbolName,
                                           accessibilityDescription: status.text)
+            // The vocabulary's colour spent twice on the same glyph: as the image view's tint (approved in
+            // Ruling B's rendering) and as the symbol's hierarchical colour, so the replacement reads as
+            // one glyph morphing into the next rather than two images swapping.
+            statusSymbol?.symbolConfiguration = Self.statusSymbolSize.applying(
+                NSImage.SymbolConfiguration(hierarchicalColor: status.emphasisColor))
             statusSymbol?.contentTintColor = status.emphasisColor
             statusLabel?.stringValue = status.shortText
             // Monochrome label: the label has to be readable on its own, and only red clears the
             // glyph floor in Light mode, so the broken states are coloured and the working ones
             // are not.
             statusLabel?.textColor = .labelColor
+            morphStatusPill(from: previousFrame)
         }
         // Counts move under an unchanged status, so the tooltip refreshes every tick as before.
         statusItem?.toolTip = "\(status.text) — \(coordinator.keystrokesSeen) keystrokes, "
@@ -495,7 +573,23 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
 
     @objc func toggleDiagnostics(_ sender: Any?) {
         guard let diagnosticsItem else { return }
+        let wasCollapsed = diagnosticsItem.isCollapsed
         diagnosticsItem.isCollapsed.toggle()
+        // Only the *reveal* has content to grow; closing the pane hides content, and `Motion.morph` always
+        // lands on `view.frame`, so there is nothing to animate toward.
+        guard wasCollapsed, let reveal = MotionPlan.lookup(.paneReveal), window?.isVisible == true else { return }
+        let content = diagnostics.view
+        // The divider keeps `NSSplitViewController`'s own animation; what morphs is the pane's *content*.
+        // Flushing the tile first is not decoration: `content.frame` has to be the rect the divider is
+        // travelling to, or the grow pose lands on the collapsed width and animates nothing.
+        splitView.view.layoutSubtreeIfNeeded()
+        let final = content.frame
+        guard final.width > 0, final.height > 0 else { return }
+        // `growFromEdge`: a zero-width rect on the pane's own leading edge -- the divider side, since this
+        // is the rightmost item -- so the content unfolds away from the divider rather than from a generic
+        // baseline the way a row does.
+        Motion.morph(content, source: CGRect(x: final.minX, y: final.minY, width: 0, height: final.height),
+                     transition: reveal)
     }
 
     @objc func revealCombos(_ sender: Any?) {
