@@ -32,6 +32,10 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
     private let insertionPopUp = NSPopUpButton()
     private let enabledCheck = NSButton(checkboxWithTitle: "Enabled", target: nil, action: nil)
     private let editorHint = NSTextField(wrappingLabelWithString: "")
+    /// A failure hint is label-colour text with a red glyph, not red text: `systemRed` at 11 pt over a
+    /// light window background is 3.57:1, under the floor for meaningful text. The sentence carries the
+    /// meaning; the glyph is emphasis.
+    private let hintSymbol = NSImageView()
     private let tryScroll = NSScrollView()
     private let tryView = NSTextView()
     private let pathLabel = NSTextField(labelWithString: "")
@@ -72,14 +76,14 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
         enabledCheck.action = #selector(commitEnabled)
 
         editorHint.font = Theme.Font.caption
-        editorHint.textColor = .secondaryLabelColor
+        editorHint.textColor = .labelColor
         editorHint.maximumNumberOfLines = 2
         editorHint.setContentHuggingPriority(.defaultLow, for: .vertical)
 
         configure(tryView, in: tryScroll, monospaced: false)
 
         pathLabel.font = Theme.Font.caption
-        pathLabel.textColor = .secondaryLabelColor
+        pathLabel.textColor = .labelColor
         pathLabel.lineBreakMode = .byTruncatingMiddle
         pathLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
@@ -89,7 +93,7 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
         let replacementCaption = caption("Replacement")
         let tryCaption = caption("Try it")
         let container = NSView()
-        let views = [triggerCaption, replacementCaption, tryCaption, triggerField, editorHint,
+        let views = [triggerCaption, replacementCaption, tryCaption, triggerField, hintSymbol, editorHint,
                      replacementScroll, insertionPopUp, enabledCheck, tryScroll, pathLabel]
         views.forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
@@ -115,7 +119,9 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
             tryCaption.trailingAnchor.constraint(equalTo: guide.leadingAnchor, constant: captionColumn),
 
             triggerField.leadingAnchor.constraint(equalTo: guide.leadingAnchor, constant: controlColumn),
-            editorHint.leadingAnchor.constraint(equalTo: guide.leadingAnchor, constant: controlColumn),
+            hintSymbol.leadingAnchor.constraint(equalTo: guide.leadingAnchor, constant: controlColumn),
+            hintSymbol.centerYAnchor.constraint(equalTo: editorHint.centerYAnchor),
+            editorHint.leadingAnchor.constraint(equalTo: hintSymbol.trailingAnchor, constant: 6),
             replacementScroll.leadingAnchor.constraint(equalTo: guide.leadingAnchor, constant: controlColumn),
             insertionPopUp.leadingAnchor.constraint(equalTo: guide.leadingAnchor, constant: controlColumn),
             tryScroll.leadingAnchor.constraint(equalTo: guide.leadingAnchor, constant: controlColumn),
@@ -188,7 +194,7 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
     private func caption(_ text: String) -> NSTextField {
         let label = NSTextField(labelWithString: text)
         label.font = Theme.Font.caption
-        label.textColor = .secondaryLabelColor
+        label.textColor = .labelColor
         label.alignment = .right
         return label
     }
@@ -217,11 +223,16 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
         enabledCheck.state = combo.enabled ? .on : .off
     }
 
-    /// Renders the hint the controller computed. Failure is the red case ("Not saved -- ...",
-    /// "Could not save -- ...").
+    /// Renders the hint the controller computed. Failure is the red-glyph case ("Not saved -- ...",
+    /// "Could not save -- ..."); the text itself stays `labelColor` either way.
     func showHint(_ text: String, failure: Bool) {
         editorHint.stringValue = text
-        editorHint.textColor = failure ? .systemRed : .secondaryLabelColor
+        editorHint.textColor = .labelColor
+        hintSymbol.isHidden = !failure
+        hintSymbol.contentTintColor = .systemRed
+        hintSymbol.image = failure
+            ? NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: "Not saved")
+            : nil
     }
 
     /// The full store path, shown as this label's tooltip. The window owns the path; the pane renders

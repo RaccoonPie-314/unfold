@@ -44,13 +44,13 @@ final class DiagnosticsViewController: NSViewController {
 
     override func loadView() {
         summaryLabel.font = Theme.Font.caption
-        summaryLabel.textColor = .secondaryLabelColor
+        summaryLabel.textColor = .labelColor
         summaryLabel.isSelectable = true
         summaryLabel.maximumNumberOfLines = 0
         summaryLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         resultLabel.font = Theme.Font.caption
-        resultLabel.textColor = .secondaryLabelColor
+        resultLabel.textColor = .labelColor
         resultLabel.alignment = .left
 
         let buttons = buttonRow()
@@ -88,7 +88,7 @@ final class DiagnosticsViewController: NSViewController {
     private func section(_ text: String) -> NSTextField {
         let label = NSTextField(labelWithString: text)
         label.font = .systemFont(ofSize: 11, weight: .semibold)
-        label.textColor = .secondaryLabelColor
+        label.textColor = .labelColor
         // Explicit: a label stretched to its container's width by a stack view otherwise resolves
         // `.natural` alignment against its own writing direction and lands the text on the right.
         label.alignment = .left

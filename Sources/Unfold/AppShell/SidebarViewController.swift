@@ -147,8 +147,8 @@ private final class ComboRowView: NSTableCellView {
         super.init(frame: .zero)
         triggerLabel.font = .monospacedSystemFont(ofSize: 12.5, weight: .medium)
         triggerLabel.lineBreakMode = .byTruncatingMiddle
-        previewLabel.font = .systemFont(ofSize: 11)
-        previewLabel.textColor = .secondaryLabelColor
+        previewLabel.font = Theme.Font.caption
+        previewLabel.textColor = .labelColor
         previewLabel.lineBreakMode = .byTruncatingTail
         previewLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
         previewLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -182,8 +182,11 @@ private final class ComboRowView: NSTableCellView {
     func apply(_ combo: Combo) {
         toolTip = "\(combo.trigger) → \(combo.preview)"
         triggerLabel.stringValue = combo.trigger
-        // Secondary, not tertiary: tertiary label on a window background measures about 2.3:1, under
-        // the 4.5:1 floor accessibility.md sets for text up to 17 pt.
+        // Enabled rows are `labelColor` (14.94:1 in Light); only the disabled case steps down to
+        // secondary label, which measures 3.95:1 in Light and 5.89:1 in Dark -- deliberately under the
+        // 4.5:1 text floor, because "disabled" is the message and the slash symbol plus the tooltip
+        // carry it without colour (see `row.triggerDisabled` in Contrast.swift, floored at 3.0).
+        // Tertiary label is not an option at any size: it measures 1.88:1 in Light.
         triggerLabel.textColor = combo.enabled ? .labelColor : .secondaryLabelColor
         previewLabel.stringValue = combo.preview
         // Only the exception gets an icon. A filled circle on every row reads as a column of radio
