@@ -23,9 +23,23 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     private var selectedID: UUID?
 
     private let splitView = NSSplitViewController()
-    private let sidebar = SidebarViewController()
-    private let editor = EditorViewController()
+    /// Internal rather than private: `SelectionOverlayTests` read `selectedRowFrame` through the real
+    /// pane the controller assembled to know where the morph's source rect is. Nothing outside this
+    /// file drives the panes.
+    let sidebar = SidebarViewController()
+    /// Internal for the same reason as `sidebar`: the tests pin the morph's landing to the trigger
+    /// field's own frame, which only the pane can answer.
+    let editor = EditorViewController()
     private let diagnostics = DiagnosticsViewController()
+    /// The selection morph's line (Ruling AG): a 1 pt separator hosted by the window's **own content
+    /// view** -- the common unclipped ancestor of the sidebar and the editor -- rather than a proxy
+    /// inside the editor pane. The pane version was clipped: `MotionDriverTests`-style measurement in
+    /// Task 11b §5.2 found the split view's `_NSSplitViewItemViewWrapper` has `masksToBounds == true`,
+    /// and this morph's `k ≈ 40` start pose is a row-sized bar sitting on the *sidebar*, so the pane
+    /// cut it and the line popped in at the pane's left edge instead of travelling. Internal rather
+    /// than private because the overlay tests read this view's geometry; only this controller installs
+    /// and morphs it.
+    let selectionOverlay = SelectionOverlayLineView()
     /// The single source of the filter text. The pane holds no copy of it, so `addCombo` clearing the
     /// filter and the empty-state copy cannot disagree with what the list shows.
     private var filter = ""
@@ -211,6 +225,15 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
             split.bottomAnchor.constraint(equalTo: root.view.bottomAnchor),
         ])
         window?.contentViewController = root
+        // Ruling AG: install the selection line at the window level, above the split view. The content
+        // view is the common unclipped ancestor of both panes (`SelectionOverlayTests` measures that
+        // its layer does not clip; the per-pane `_NSSplitViewItemViewWrapper` does). It ships hidden
+        // (Ruling R) and every morph re-pins its frame before installing the pose, so there is no
+        // autoresizing to maintain -- a resting overlay draws nothing either way.
+        if let content = window?.contentView {
+            selectionOverlay.isHidden = true
+            content.addSubview(selectionOverlay)
+        }
     }
 
     private func installToolbar() {
@@ -442,29 +465,33 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     /// runs from here: the sidebar row the user just picked is the source, the editor's trigger field is
     /// the destination, and neither pane can see the other.
     ///
-    /// It animates the editor's **proxy**, never the field itself. The proxy is a 1 pt separator line
-    /// pinned over the trigger field that participates in no layout of a control, and re-laying out a
-    /// control the user may be typing into is what moved the caret the last time a morph touched an editor
-    /// control. It ships hidden (Ruling R), so it is unhidden for the length of the morph and put back by
-    /// the completion -- and `Motion.morph`'s identity guard makes sure the completion that runs is the one
-    /// belonging to the animation that ended up holding the key, so a fast series of selections hides the
-    /// proxy exactly once, at the end.
+    /// It animates the window-level `selectionOverlay` (Ruling AG), never a control. The overlay is a
+    /// 1 pt separator line whose only layout is the frame written here at morph time -- the field-wide,
+    /// 1 pt-tall, centre-line rect the pane-hosted proxy used to get from its constraints -- and re-laying
+    /// out a real control the user may be typing into is what moved the caret the last time a morph
+    /// touched an editor control. It ships hidden (Ruling R), is unhidden before the pose is installed
+    /// and put back by `Motion.morph`'s identity-guarded completion, so a fast series of selections
+    /// hides the line exactly once, at the end, and an interrupted morph's completion never hides the
+    /// one that replaced it. That pairing is the whole reason the completion is passed to `Motion.morph`
+    /// rather than chased by a second timer.
     private func morphSelectionIntoTriggerField() {
         guard let morph = MotionPlan.lookup(.selectionMorph),
               let from = sidebar.selectedRowFrame,
               let to = editor.triggerFieldFrameInWindow,
               to != from,
-              let host = editor.triggerFieldProxy.superview,
-              let window, window.isVisible else { return }
+              let window, window.isVisible,
+              let host = selectionOverlay.superview else { return }
         // Both accessors answer in *screen* coordinates, because they cross panes; what the driver needs
-        // is the source in the space the morphing view's own `frame` lives in -- `MotionGeometry.morph`
-        // compares the two rects, so a screen-space source beside a superview-space target would fling the
-        // pose a whole window-height away from the field. Down through the window, then into the host.
+        // is each rect in the space the overlay's own `frame` lives in -- `MotionGeometry.morph` compares
+        // the two rects, so a screen-space rect beside a superview-space one would fling the pose a whole
+        // window-height away from where the user is looking. Down through the window, then into the host.
         let source = host.convert(window.convertFromScreen(from), from: nil)
-        let proxy = editor.triggerFieldProxy
-        proxy.isHidden = false
-        Motion.morph(proxy, source: source, transition: morph) { [weak proxy] in
-            proxy?.isHidden = true
+        let landing = host.convert(window.convertFromScreen(to), from: nil)
+        selectionOverlay.frame = CGRect(x: landing.minX, y: landing.midY - 0.5,
+                                        width: landing.width, height: 1)
+        selectionOverlay.isHidden = false
+        Motion.morph(selectionOverlay, source: source, transition: morph) { [weak self] in
+            self?.selectionOverlay.isHidden = true
         }
     }
 
@@ -676,5 +703,23 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     /// so the view exists whether or not the pane is currently expanded.
     @objc func runMotionProbe(_ sender: Any?) {
         MotionProbe.runAll(on: diagnostics.containerForMotionProbe) { line in launchLog("motion: \(line)") }
+    }
+}
+
+/// The window-level line `selectionMorph` travels from a sidebar row to the editor's trigger field
+/// (Ruling AG). It fills its bounds with the semantic separator colour -- the same colour the
+/// pane-hosted proxy used, so it re-resolves on appearance change and spends no new colour -- draws
+/// nothing while hidden, and its `hitTest` returns nil so an overlay covering the whole window can
+/// never eat a click.
+///
+/// Owned by `MainWindowController` because its two rects live in different panes; internal rather
+/// than private only so the overlay tests can read the real view's geometry.
+final class SelectionOverlayLineView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard !isHidden else { return }
+        NSColor.separatorColor.setFill()
+        dirtyRect.fill()
     }
 }

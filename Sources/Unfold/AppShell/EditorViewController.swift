@@ -39,23 +39,17 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
     private let tryScroll = NSScrollView()
     private let tryView = NSTextView()
     private let pathLabel = NSTextField(labelWithString: "")
-    private let triggerProxy = ProxyLineView()
 
     /// `ConsistencyTest` types into this and reads it back.
     var tryTextView: NSTextView { tryView }
 
-    /// The trigger field's frame, in screen coordinates -- where a selection morph lands.
+    /// The trigger field's frame, in screen coordinates -- where a selection morph lands. The morph
+    /// itself runs on `MainWindowController`'s window-level overlay (Ruling AG), not on anything the
+    /// pane hosts; this accessor is the only geometry the pane still owes the motion.
     var triggerFieldFrameInWindow: CGRect? {
         guard let window = view.window else { return nil }
         return window.convertToScreen(triggerField.convert(triggerField.bounds, to: nil))
     }
-
-    /// A 1 pt separator-coloured line laid exactly over the trigger field, **hidden until the morph
-    /// needs it**. Task 11 morphs this rather than the field itself: re-laying out a real control
-    /// mid-animation is what moved the caret the last time a morph touched something the user was
-    /// typing into. It draws nothing while hidden, and its `hitTest` returns nil so it can never eat a
-    /// click.
-    var triggerFieldProxy: NSView { triggerProxy }
 
     // MARK: - Construction
 
@@ -111,13 +105,6 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
             $0.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview($0)
         }
-        // Above the field it mirrors, so it draws on top of it -- and hit-tests through to it. Hidden
-        // until Task 11's shared-element morph unhides it: nothing before that task has any business
-        // drawing a line through the middle of the user's trigger text. The constraints stay, because
-        // Task 11 reads this geometry through `triggerFieldFrameInWindow`/`triggerFieldProxy`.
-        triggerProxy.translatesAutoresizingMaskIntoConstraints = false
-        triggerProxy.isHidden = true
-        container.addSubview(triggerProxy)
 
         let guide = container.safeAreaLayoutGuide
         // Pane padding + the 82-point caption column, and the same plus a 12-point gutter.
@@ -178,11 +165,6 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
             // The spare height the window has left over goes to the two text areas equally. Left to
             // their own devices, the lower one absorbs all of it and the editor looks lopsided.
             tryScroll.heightAnchor.constraint(equalTo: replacementScroll.heightAnchor).withPriority(250),
-
-            triggerProxy.leadingAnchor.constraint(equalTo: triggerField.leadingAnchor),
-            triggerProxy.trailingAnchor.constraint(equalTo: triggerField.trailingAnchor),
-            triggerProxy.centerYAnchor.constraint(equalTo: triggerField.centerYAnchor),
-            triggerProxy.heightAnchor.constraint(equalToConstant: 1),
         ])
         for scroll in [replacementScroll, tryScroll] {
             scroll.setContentHuggingPriority(.defaultLow, for: .vertical)
@@ -310,20 +292,6 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
 
     @objc private func commitEnabled() {
         onEdit?(.enabled(enabledCheck.state == .on))
-    }
-}
-
-/// The proxy the Task 11 morph animates in place of the trigger field. It draws a semantic separator
-/// line (so it re-resolves on appearance change), and hit-tests to nil so the real field underneath
-/// stays clickable. It is created hidden -- Task 11 is the only thing that shows it -- and draws nothing
-/// while hidden, so a line that is standing by can never paint over the trigger text.
-private final class ProxyLineView: NSView {
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-
-    override func draw(_ dirtyRect: NSRect) {
-        guard !isHidden else { return }
-        NSColor.separatorColor.setFill()
-        dirtyRect.fill()
     }
 }
 
