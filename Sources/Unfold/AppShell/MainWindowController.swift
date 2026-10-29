@@ -34,17 +34,11 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     private var pauseItem: NSToolbarItem?
     private var statusLabel: NSTextField?
     private var statusSymbol: NSImageView?
-    /// The pill surface `statusMorph` animates: the glass view the toolbar item wraps (Ruling AJ7).
-    ///
-    /// This is the object whose width the user reads as "the pill", because AppKit's toolbar layout sizes
-    /// *this* view to its content; the `NSStackView` inside it is the glass view's own `contentView` and
-    /// only ever has the inset the wrap's padding gives it. Morphing the stack therefore sprang content
-    /// that travelled inside a box which snapped -- two objects on two clocks, which is exactly what the
-    /// spec's rule "nothing animates more than once per interaction / the system already animates this
-    /// control" forbids. Material and content travel as one object now.
-    ///
-    /// Internal rather than private because `StatusPillMotionTests` measures the frames the morph is built
-    /// from on the real toolbar item this controller assembles; nothing outside this file drives it.
+    /// The pill surface the toolbar sizes. Internal rather than private because
+    /// `StatusPillWidthTests` measures its fitting size across all seven `MenuStatus` states -- the
+    /// property the user asked for on 2026-10-29 is that this view's width never changes -- and nothing
+    /// outside this file drives it. It used to be the surface `statusMorph` sprang its width on; that
+    /// transition is gone because the width it animated must now never exist as a change.
     var statusPill: NSView?
     private var statusItem: NSToolbarItem?
     /// The appearance control, kept so choosing a preference can rewrite *its* tooltip without hunting
@@ -67,6 +61,22 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     /// The status pill's glyph size, spelled once: `buildStatusItem` starts with it and `refreshStatus`
     /// composes the status colour onto the same value instead of re-typing the numbers.
     private static let statusSymbolSize = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
+
+    /// The pill's label font, spelled once because the width reservation below measures the seven
+    /// states **in this font** -- a second spelling would let the reservation and the rendered text
+    /// drift apart.
+    private static let statusLabelFont = NSFont.systemFont(ofSize: 11, weight: .medium)
+
+    /// The width every status label is pinned to: the widest `MenuStatus.shortText` rendered in
+    /// `statusLabelFont`. The pill the user sees is therefore one fixed box across all seven states --
+    /// "i want it a fixed size without changing when toggling it" -- and `StatusPillWidthTests` asserts
+    /// the fitting size is identical for every state, which is only true because of this reservation.
+    /// The glyph half was measured too: all seven symbols at `statusSymbolSize` render 15 pt wide, so
+    /// the label is the only axis that needed pinning.
+    private static let statusLabelReservedWidth: CGFloat = ceil(
+        MenuStatus.allPillStates.map {
+            ($0.shortText as NSString).size(withAttributes: [.font: statusLabelFont]).width
+        }.max() ?? 0)
 
     init(coordinator: ExpansionCoordinator, store: Store) {
         self.coordinator = coordinator
@@ -274,12 +284,19 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
 
     /// The one place colour is spent: a status indicator, which `color.md › Liquid Glass color` names
     /// as a legitimate use. The symbol carries the meaning too, so colour is never the only signal.
+    ///
+    /// The label's width is **reserved** to `statusLabelReservedWidth` before the stack is wrapped, so
+    /// the glass box the toolbar sizes is the same for all seven states and no width motion can exist
+    /// (the user asked for a fixed pill on 2026-10-29; `statusMorph`, which sprang a width change, is
+    /// deleted at the same time as this reservation is added).
     private func buildStatusItem(_ identifier: NSToolbarItem.Identifier) -> NSToolbarItem {
         let symbol = NSImageView()
         symbol.symbolConfiguration = Self.statusSymbolSize
         symbol.setContentHuggingPriority(.required, for: .horizontal)
         let text = NSTextField(labelWithString: "…")
-        text.font = .systemFont(ofSize: 11, weight: .medium)
+        text.font = Self.statusLabelFont
+        text.translatesAutoresizingMaskIntoConstraints = false
+        text.widthAnchor.constraint(equalToConstant: Self.statusLabelReservedWidth).isActive = true
         let stack = NSStackView(views: [symbol, text])
         stack.orientation = .horizontal
         stack.spacing = 5
@@ -291,7 +308,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         item.paletteLabel = "Status"
         item.view = Glass.wrap(stack, cornerRadius: Theme.Radius.pill, padding: 6)
         statusItem = item
-        // The wrapped glass view, not the stack inside it, is what `statusMorph` animates: see `statusPill`.
+        // The wrapped glass view is the pill the user reads; `StatusPillWidthTests` measures it.
         statusPill = item.view
         // Toolbar customization can rebuild this item after the fact, and the fresh stack shows "..."
         // until something rewrites it. The change-memo would otherwise wait for the status to differ,
@@ -520,43 +537,6 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         sidebar.setRows(matching, selecting: selectedID)
     }
 
-    // MARK: - Motion
-
-    /// `statusMorph`: the pill's *width* is the motion -- the label re-measures when the status changes --
-    /// so the morph only runs on a tick that both changed the status (the memo in `refreshStatus` handles
-    /// that) and actually re-measured the pill. Two statuses share `Tap off`, and a status whose symbol
-    /// changes but whose text does not has no geometry to travel, so this returns without animating rather
-    /// than installing an identity→identity clip.
-    ///
-    /// - Parameter previous: the pill surface's frame *before* the label and glyph were rewritten.
-    private func morphStatusPill(from previous: CGRect?) {
-        guard let morph = MotionPlan.lookup(.statusMorph),
-              let pill = statusPill,
-              let previous,
-              pill.window?.isVisible == true else { return }
-        // The pill's width is re-measured by the toolbar, not by the content stack: read on the wrapped item
-        // view, the frame is still the *old* 71 pt synchronously after the label rewrite, still 71 pt after a
-        // forced `layoutSubtreeIfNeeded()`, and only arrives at the new 263 pt with the next display pass
-        // (`StatusPillMotionTests`). Morphing onto a rect the view is about to leave is the jump `Motion`
-        // exists to prevent, so the landing rect is read after the turn that produces it. This defers a
-        // *measurement*; the animation still retargets whatever is in flight, which is `Motion.morph`'s own
-        // interrupt behaviour.
-        //
-        // **Measured limit:** a block enqueued with `DispatchQueue.main.async` from here can run *before*
-        // that display pass (measured: it read 71 pt, while ~5 ms later the frame was 263 pt), in which case
-        // `final == previous`, this returns without animating, and the status change goes un-morphed. That is
-        // the scheduling Task 11b shipped, unchanged by Ruling AJ7 -- which retargeted the view, not the clock
-        // -- and it is why the live pass has to confirm the pill visibly moves rather than assume it does.
-        DispatchQueue.main.async { [weak pill] in
-            guard let pill else { return }
-            let final = pill.frame
-            guard final != previous,
-                  previous.width > 0, previous.height > 0,
-                  final.width > 0, final.height > 0 else { return }
-            Motion.morph(pill, source: previous, transition: morph)
-        }
-    }
-
     // MARK: - Status
 
     private func startStatusTimer() {
@@ -575,18 +555,14 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
                                          tapState: coordinator.tapState,
                                          isTapEnabled: coordinator.isTapEnabled)
         // `refreshStatus` runs once a second; the pill's visible parts are rewritten only when the
-        // status actually changed, so an unchanged second costs nothing and Task 11's later
-        // `statusMorph` can fire off this same inequality without ever animating on a no-op tick.
+        // status actually changed, so an unchanged second costs nothing.
         if status != lastRenderedStatus {
-            // The pill surface's frame *before* the rewrite is the morph's source: `statusMorph` is a
-            // width change, and the width that matters is the one the user was looking at a moment ago.
-            let previousFrame = statusPill?.frame
             lastRenderedStatus = status
             statusSymbol?.image = NSImage(systemSymbolName: status.symbolName,
                                           accessibilityDescription: status.text)
             // The vocabulary's colour spent twice on the same glyph: as the image view's tint (approved in
             // Ruling B's rendering) and as the symbol's hierarchical colour, so the replacement reads as
-            // one glyph morphing into the next rather than two images swapping.
+            // one glyph rather than a recoloured second image.
             statusSymbol?.symbolConfiguration = Self.statusSymbolSize.applying(
                 NSImage.SymbolConfiguration(hierarchicalColor: status.emphasisColor))
             statusSymbol?.contentTintColor = status.emphasisColor
@@ -595,7 +571,13 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
             // glyph floor in Light mode, so the broken states are coloured and the working ones
             // are not.
             statusLabel?.textColor = .labelColor
-            morphStatusPill(from: previousFrame)
+            // **The symbol swap stays static, measured.** The seven states' glyphs all render 15 pt
+            // wide at `statusSymbolSize` and the label's width is reserved, so no replacement animation
+            // would move the pill even if AppKit provided one -- and this SDK's AppKit has no
+            // image-replacement transition on `NSImageView` to ask for (grep for one in the framework
+            // headers comes back empty; SwiftUI's `contentTransition` is not available to an AppKit
+            // shell that forbids `NSHostingView`). Adding a crossfade would be a second hand-drawn
+            // motion on a control the spec says the system already owns, so the swap is the plain one.
         }
         // Counts move under an unchanged status, so the tooltip refreshes every tick as before.
         statusItem?.toolTip = "\(status.text) — \(coordinator.keystrokesSeen) keystrokes, "

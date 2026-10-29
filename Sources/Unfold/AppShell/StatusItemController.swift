@@ -19,6 +19,16 @@ enum MenuStatus: Equatable {
     case tapDetached
     case listening
 
+    /// The whole vocabulary as a list -- deliberately **not** `CaseIterable` conformance, per the note in
+    /// `StatusVocabularyTests`: switches over `MenuStatus` must stay exhaustive so a new case fails at
+    /// every rendering decision. This list is for measurements over all states (the toolbar pill's
+    /// fixed-width reservation, and the test that pins it), and a new case has to be added here too --
+    /// the width test walks this list, so forgetting it is a failing pill, not a silent one.
+    static let allPillStates: [MenuStatus] = [
+        .notPermitted, .paused, .tapGivenUp, .notReceivingKeystrokes,
+        .tapInterrupted, .tapDetached, .listening,
+    ]
+
     static func evaluate(isTrusted: Bool,
                          isPaused: Bool,
                          tapState: ExpansionCoordinator.TapState,

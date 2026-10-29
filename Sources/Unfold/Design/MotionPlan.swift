@@ -3,7 +3,7 @@ import Foundation
 /// Which transition, with what timing, moving what.
 enum TransitionID: String, CaseIterable {
     case selectionSlide
-    case paneReveal, statusMorph
+    case paneReveal
     case promptPresent, promptDismiss
 }
 
@@ -28,7 +28,6 @@ enum Geometry {
     /// sidebar-row-to-trigger-field line morph that also used it was removed by user decision
     /// on 2026-10-29.
     case positionCrossfade // shared element from one rect to another
-    case symbolMorph       // SF Symbol replacement plus a width change
     /// The glass selection pill's travel: it slides from the row it was on to the row it lands on and
     /// arrives having grown the last few percent into size, so a *whole box* moves -- unlike
     /// `.growFromEdge`, which opens a closed axis. The user asked for exactly this on 2026-10-29; it
@@ -54,8 +53,6 @@ enum MotionPlan {
               geometry: .slideAndGrow, opacityRamp: 0.2),
         .init(id: .paneReveal, duration: 0.28, curve: .spring(damping: 0.85),
               geometry: .growFromEdge, opacityRamp: 0.2),
-        .init(id: .statusMorph, duration: 0.24, curve: .easeOut(0.33, 1, 0.68, 1),
-              geometry: .symbolMorph, opacityRamp: 0.2),
         .init(id: .promptPresent, duration: 0.22, curve: .spring(damping: 0.85),
               geometry: .positionCrossfade, opacityRamp: 0.2),
         .init(id: .promptDismiss, duration: 0.18, curve: .easeOut(0.33, 1, 0.68, 1),

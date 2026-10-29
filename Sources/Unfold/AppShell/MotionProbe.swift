@@ -8,7 +8,7 @@ enum MotionProbe {
     /// `promptDismiss` are Plan 4's -- the panel they need does not exist yet -- and the selection-line
     /// and row-flash transitions were removed by user decision on 2026-10-29, so this is the wired set
     /// and `MotionProbeTests` asserts it.
-    static let wiredTransitionIDs: [TransitionID] = [.selectionSlide, .paneReveal, .statusMorph]
+    static let wiredTransitionIDs: [TransitionID] = [.selectionSlide, .paneReveal]
 
     /// Runs the two wired transitions against `host`, staggered past the previous one's duration plus a
     /// settle gap. `Motion.morph` deliberately removes the in-flight animation when a new target arrives, so
@@ -30,10 +30,6 @@ enum MotionProbe {
     ///
     /// - `.growFromEdge` (`paneReveal`) reuses the very helper the production call site calls --
     ///   `MotionGeometry.revealEdge` -- so a probe and a pane cannot drift apart.
-    /// - `.symbolMorph` (`statusMorph`) -- the pill's *width* change: same origin, same height, a different
-    ///   width. Production's source is the pill's previous frame as the toolbar laid it out
-    ///   (`MainWindowController.morphStatusPill(from:)`); the probe only has the host, so it synthesizes the
-    ///   width change the call site expresses, at half the resting width.
     /// - `.slideAndGrow` (`selectionSlide`) -- the selection pill's travel: production's source is the
     ///   pill's previous row rect shrunk about its centre (`MotionGeometry.slideAndGrowSource`), so the
     ///   probe synthesizes the same shape from a "previous row" one row-width to the left of the host.
@@ -45,8 +41,6 @@ enum MotionProbe {
     static func sourceRect(for transition: Transition, final: CGRect) -> CGRect {
         switch transition.geometry {
         case .growFromEdge:      return MotionGeometry.revealEdge(for: final)
-        case .symbolMorph:       return CGRect(x: final.minX, y: final.minY,
-                                               width: final.width / 2, height: final.height)
         case .slideAndGrow:      return MotionGeometry.slideAndGrowSource(
                                         previous: final.offsetBy(dx: -final.width, dy: 0))
         case .positionCrossfade: return final.offsetBy(dx: -final.width, dy: 0)
@@ -59,10 +53,11 @@ enum MotionProbe {
     ///
     /// What "moving" means in the log: a transform animation does *not* change `bounds` -- the resting
     /// size stays the resting size, which is the point of morphing by transform. The evidence that the
-    /// motion is geometric is `scale` (0.02 → 1 for the pane's zero-width grow after its clamp, 0.5 → 1 for
-    /// the pill's width change, 1.000 × 1.000 with a sliding `tx` for a crossfade) and `tx`/`ty` sliding to
-    /// zero. `bounds` is logged alongside them precisely so a mistake that *did* resize the layer would show
-    /// up here rather than being mistaken for the transform.
+    /// motion is geometric is `scale` (0.02 → 1 for the pane's zero-width grow after its clamp, 0.9 → 1
+    /// for the selection pill's grow-in as it slides, 1.000 × 1.000 with a sliding `tx` for a
+    /// crossfade) and `tx`/`ty` sliding to zero. `bounds` is logged alongside them precisely so a
+    /// mistake that *did* resize the layer would show up here rather than being mistaken for the
+    /// transform.
     private static func run(_ transition: Transition, on host: NSView, log: @escaping (String) -> Void) {
         let final = host.frame
         let source = sourceRect(for: transition, final: final)

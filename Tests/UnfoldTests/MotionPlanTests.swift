@@ -21,7 +21,7 @@ private func progress(of curve: (Double, Double, Double, Double), atTime time: D
 /// The motion contract as data. Every rule corrected in review is an assertion here, so a
 /// regression is a failing test rather than "i cant tell if anything animated".
 final class MotionPlanTests: XCTestCase {
-    private let required: [TransitionID] = [.selectionSlide, .paneReveal, .statusMorph,
+    private let required: [TransitionID] = [.selectionSlide, .paneReveal,
                                             .promptPresent, .promptDismiss]
 
     func testEveryNamedTransitionExists() {
@@ -35,7 +35,6 @@ final class MotionPlanTests: XCTestCase {
         let expected: [TransitionID: (duration: Double, curve: Curve, ramp: Double)] = [
             .selectionSlide: (0.24, .spring(damping: 0.85), 0.2),
             .paneReveal: (0.28, .spring(damping: 0.85), 0.2),
-            .statusMorph: (0.24, .easeOut(0.33, 1, 0.68, 1), 0.2),
             .promptPresent: (0.22, .spring(damping: 0.85), 0.2),
             .promptDismiss: (0.18, .easeOut(0.33, 1, 0.68, 1), 0.2),
         ]
@@ -119,10 +118,10 @@ final class MotionPlanTests: XCTestCase {
     /// still has value if anyone adds a `default:`. The name check is `==` rather than `contains`, because
     /// `.positionCrossfade` ends in the substring "fade" and a membership set is what actually refuses it.
     func testEveryTransitionMovesGeometry() {
-        let allowed: Set<String> = ["growFromEdge", "positionCrossfade", "symbolMorph", "slideAndGrow"]
+        let allowed: Set<String> = ["growFromEdge", "positionCrossfade", "slideAndGrow"]
         for t in MotionPlan.all {
             switch t.geometry {
-            case .growFromEdge, .positionCrossfade, .symbolMorph, .slideAndGrow:
+            case .growFromEdge, .positionCrossfade, .slideAndGrow:
                 break
             }
             XCTAssertFalse(String(describing: t.geometry) == "fade", "\(t.id)")
