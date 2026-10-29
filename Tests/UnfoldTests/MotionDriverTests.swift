@@ -175,8 +175,7 @@ final class MotionDriverTests: XCTestCase {
             // The geometry a real `scaleFromGap` morph is handed: a 200×40 row unfolding out of a
             // zero-height gap 20 pt above its baseline.
             let start = MotionGeometry.morph(source: CGRect(x: 40, y: 100, width: 200, height: 0),
-                                             final: CGRect(x: 40, y: 60, width: 200, height: 40),
-                                             flipped: false)
+                                             final: CGRect(x: 40, y: 60, width: 200, height: 40))
             let spring = Motion.spring(for: transition, start: start, dampingRatio: damping)
             let settling = spring.settlingDuration
             let overshoot = exp(-Double.pi * damping / (1 - damping * damping).squareRoot())
@@ -300,29 +299,30 @@ final class MotionDriverTests: XCTestCase {
 
     // MARK: - finding 3: the flipped container, measured
 
-    /// Every fixture written before this line sat in a non-flipped container, so `MotionGeometry`'s
-    /// `flipped ? -dy : dy` was a model of what a layer does, never a measurement of it. This builds the
-    /// flipped one -- a container whose `isFlipped` is true, the space a row inside a scroll view's
-    /// document view or an `NSTableView` lives in -- morphs out of a gap that is *visually* above the row,
-    /// and reads the sign off the presentation tree.
+    /// Every fixture written before Task 10 sat in a non-flipped container, so `MotionGeometry`'s
+    /// then-`flipped ? -dy : dy` was a model of what a layer does, never a measurement of it. This builds
+    /// the flipped one -- a container whose `isFlipped` is true, the space a row inside a scroll view's
+    /// document view or an `NSTableView` lives in -- morphs out of a gap that is *visually* above the row
+    /// (and 40 pt clear of it, so the start pose carries a displacement in both containers even after
+    /// the anchor compensation), and reads the sign off the presentation tree.
     ///
     /// How to read the numbers: in each container the layer's own coordinates run exactly the way its
-    /// view's do -- the container's layer reports `isGeometryFlipped` equal to the view's `isFlipped`
-    /// (asserted below, because it is the reason no correction is needed), the morphing layer's `frame`
-    /// equals the view's `frame` in both orientations, and a control that converted the animated layer's
-    /// rect into window coordinates measured `ty = +20` moving the unflipped layer 20 pt *up* and the
-    /// flipped layer 20 pt *down*. So a positive displacement is toward larger `y` in whichever space the
-    /// rects are written on, and the translation that lands the layer on its source carries the same sign
-    /// as `dy` in **both**. Measured here: unflipped `dy = +20` → `ty = +19.53`; flipped `dy = −20` →
-    /// `ty = −19.68`. The shipped ternary failed the second: it handed the layer `ty = +19.62` against a
-    /// `dy` of −20, starting the morph 20 pt on the far side of the resting frame and sliding it into
-    /// place from below the row instead of from the gap above it (that is mutation (c): re-inverting the
-    /// ternary fails this test twice, `("1") is not equal to ("-1")`). The fix went into `MotionGeometry`,
-    /// not into a driver guess.
+    /// view's do -- the morphing layer's resting `frame` equals the view's `frame` in both orientations,
+    /// and a control that converted the animated layer's rect into window coordinates measured
+    /// `ty = +20` moving the unflipped layer 20 pt *up* and the flipped layer 20 pt *down* (Task 10). So
+    /// a positive displacement is toward larger `y` in whichever space the rects are written on, and the
+    /// translation that lands the layer on its source carries the same sign as `dy` in **both**. That is
+    /// why the ternary went: it handed the flipped layer `ty = +19.62` against a `dy` of −20, starting
+    /// the morph 20 pt on the far side of the resting frame and sliding it into place from below the row
+    /// instead of from the gap above it -- re-inverting it still fails this test twice, and Ruling AE
+    /// deleted the parameter rather than keeping an input the math does not read.
     ///
-    /// The displacement is read off `frame.origin`, which carries the translation in full (measured: a
-    /// `ty` of 18.7 moved the origin by 18.7), rather than off `frame.midY`, because a rect scaled to 2%
-    /// has a midY that barely budges (measured: 0.4 pt of a 20 pt translation).
+    /// Under the compensation the reading is *bigger* than the raw midpoint gap, by `(1 − k) · size / 2`
+    /// with the default anchor `(0, 0)` -- the pose starts on `source`, and here `source` sits 40 pt
+    /// beyond the gap edge the rects measure from. The displacement is read off `frame.origin`, which
+    /// carries the translation in full (measured: a `ty` of 18.7 moved the origin by 18.7), rather than
+    /// off `frame.midY`, because a rect scaled to 2% has a midY that barely budges (measured: 0.4 pt of
+    /// a 20 pt translation).
     @MainActor
     func testAFlippedContainerMovesTheSameWayItsOwnCoordinatesSay() throws {
         let unflipped = try measureUpwardMorph(flipped: false)
@@ -333,8 +333,11 @@ final class MotionDriverTests: XCTestCase {
         NSLog("motion flipped measurement: \(report)")
 
         for reading in [unflipped, flipped] {
-            // The mechanism the sign claim rests on: AppKit mirrors the view's flippedness into the layer,
-            // so the morph's own space already runs the way the rects say it runs.
+            // Part of Task 10's explanation of why no flip correction is needed: for a flipped *content
+            // view* the container's layer mirrors its flippedness. It is a mechanism of this fixture,
+            // not the contract the morph rests on -- the real scroll host measures the document layer's
+            // flag as false (see `testTheCompensationHoldsInsideARealFlippedScrollHost`) and the pose
+            // still lands, which is why the load-bearing assertion below is the frame-equality one.
             XCTAssertEqual(reading.containerLayerIsGeometryFlipped, reading.containerIsFlipped,
                            "the container's layer disagrees with its view about the y direction "
                                + "(\(reading.report))")
@@ -385,17 +388,18 @@ final class MotionDriverTests: XCTestCase {
     }
 
     /// One row at a real frame in a container of the given flippedness, morphed out of a zero-height gap
-    /// sitting **visually above** it, read back off the presentation tree at the earliest moment this
-    /// process produces one. No expectation about the sign is folded in here -- the point is to find out.
+    /// sitting **visually above** it and clear of it by 40 pt, read back off the presentation tree at the
+    /// earliest moment this process produces one. No expectation about the sign is folded in here -- the
+    /// point is to find out.
     @MainActor
     private func measureUpwardMorph(flipped: Bool) throws -> UpwardMorphReading {
         let (window, content, host) = makeFixture(flipped: flipped)
         let layer = try XCTUnwrap(host.layer)
         let transition = try XCTUnwrap(MotionPlan.lookup(.rowInsert))
 
-        // In a non-flipped superview +y runs up, so the gap above the row sits at its maxY edge; in a
-        // flipped superview +y runs down, so the same-looking gap sits at its minY edge.
-        let gapY = flipped ? host.frame.minY : host.frame.maxY
+        // In a non-flipped superview +y runs up, so the gap above the row sits beyond its maxY edge; in
+        // a flipped superview +y runs down, so the same-looking gap sits beyond its minY edge.
+        let gapY = flipped ? host.frame.minY - 40 : host.frame.maxY + 40
         let source = CGRect(x: host.frame.minX, y: gapY, width: host.frame.width, height: 0)
         Motion.morph(host, source: source, transition: transition)
         XCTAssertTrue(layer.animationKeys()?.contains(morphKey) == true,
@@ -432,6 +436,252 @@ final class MotionDriverTests: XCTestCase {
             earlyScale: earlyScale ?? 0,
             displacement: earlyDisplacement ?? 0,
             elapsedAtEarlyReading: earlyElapsed ?? 0)
+    }
+
+    // MARK: - Ruling AE: the start pose lands on its source
+
+    /// The centre displacement `MotionGeometry` returns is anchor-agnostic, and that is exactly its
+    /// limitation: a layer paints its transform about its own `anchorPoint`, so with AppKit's default
+    /// `(0, 0)` the bare midpoint **under-translates by `(1 − k) · size / 2` per axis** -- the 19.6 pt a
+    /// 40 pt row scaled to 0.02 was measured landing short of its own source rect. `Motion` adds the
+    /// signed correction `(1 − k) · size · (0.5 − anchor)` from the layer's actual anchor (Ruling AE),
+    /// and this measures the result: the presentation layer's rendered rect -- the resting frame carried
+    /// through the presentation's own transform about the anchor, expressed in the container's space --
+    /// sits within 1 pt of the intended source at an early sample, in **both** container orientations.
+    ///
+    /// Geometry: the gap sits on the edge the anchor pins (`minY`, the side `anchorPoint` measures from)
+    /// and is 8 pt inset in x, so the start pose carries translations of −0.4 pt in y and −8 pt in x
+    /// against bare-midpoint errors of −19.6 pt and −8 pt. Position and time behave differently here on
+    /// purpose: with anchor `(0, 0)` the rendered origin is `rest origin + translation`, and the
+    /// translation decays toward identity as the ramp runs, so the *position* error a late sample adds is
+    /// only `u · |t₀|` (measured: earliest sample ≈ 2-3% in, so well under 1 pt) while the *size*
+    /// interpolates at `u · (1 − k) · size` and would drift past any honest fixed tolerance. The
+    /// assertions are therefore about the pose's position -- which is what the compensation controls -- and
+    /// the sampled scale is asserted low in return, which is what proves the reading is the start and not
+    /// the tail.
+    @MainActor
+    func testAShrinkingMorphsStartPoseLandsOnItsSourceRectInEitherOrientation() throws {
+        var reports: [String] = []
+        for flipped in [false, true] {
+            let (window, _, host) = makeFixture(flipped: flipped)
+            let layer = try XCTUnwrap(host.layer)
+            let transition = try XCTUnwrap(MotionPlan.lookup(.rowInsert))
+            let source = CGRect(x: host.frame.minX - 8, y: host.frame.minY,
+                                width: host.frame.width - 16, height: 0)
+            Motion.morph(host, source: source, transition: transition)
+            XCTAssertTrue(layer.animationKeys()?.contains(morphKey) == true,
+                          "no animation installed under \(morphKey) with flipped=\(flipped): the driver "
+                              + "attached nothing, which is not a render-cycle question")
+            let reading = try readStartPose(of: layer, within: 0.20)
+            window.orderOut(nil)
+            reports.append("flipped=\(flipped) source=\(source) \(reading.report)")
+            try skipUnlessPresentationWasLive(reading)
+
+            // The reading is the start of the morph, not its tail: k is clamped to 0.02 on y, and 0.5 is
+            // nowhere near the ramp's end.
+            XCTAssertLessThan(reading.scale.height, 0.5,
+                              "sampled scale \(reading.scale.height) is too far along to read a start "
+                                  + "pose (\(reports.last!))")
+            XCTAssertEqual(reading.rendered.minX, source.minX, accuracy: 1.0,
+                           "with isFlipped=\(flipped) the shrinking morph's start pose sat "
+                               + "\(String(format: "%.2f", reading.rendered.minX - source.minX)) pt off "
+                               + "its source in x — the horizontal anchor term is wrong (\(reports.last!))")
+            XCTAssertEqual(reading.rendered.minY, source.minY, accuracy: 1.0,
+                           "with isFlipped=\(flipped) the shrinking morph's start pose sat "
+                               + "\(String(format: "%.2f", reading.rendered.minY - source.minY)) pt off "
+                               + "its source in y — the bare midpoint is \(String(format: "%.1f", (1 - reading.scale.height) * host.frame.height / 2)) pt short here (\(reports.last!))")
+        }
+        let report = reports.joined(separator: "\n")
+        print("anchor-compensation start-pose measurement (k < 1):\n\(report)")
+        NSLog("motion anchor compensation shrink: \(report)")
+    }
+
+    /// The compensation matters in the **other** direction: a source *larger* than its target (a pane
+    /// closing onto a pill) scales up, `k > 1`, and `(1 − k)` flips sign. The term is derived from the
+    /// anchor, not hard-coded for shrinking, so the same code must land this pose too -- with the source
+    /// sharing the resting origin the pose needs **zero** translation, while the bare midpoint flings it
+    /// `(k − 1) · size / 2` = 100 pt in x and 20 pt in y *past* the frame, the opposite way from the
+    /// shrinking case. A test that only ever checked `k < 1` would pass on a compensation hard-coded as
+    /// `+(1 − k) · size / 2` ... which is the same expression, but a future edit that special-cases the
+    /// shrink would not be caught; this pins the sign in both.
+    @MainActor
+    func testAGrowingStartPoseIsCompensatedInTheOtherDirection() throws {
+        var reports: [String] = []
+        for flipped in [false, true] {
+            let (window, _, host) = makeFixture(flipped: flipped)
+            let layer = try XCTUnwrap(host.layer)
+            let transition = try XCTUnwrap(MotionPlan.lookup(.paneReveal))
+            // Same origin as the resting frame, twice the size on both axes: k = 2 on both.
+            let source = CGRect(x: host.frame.minX, y: host.frame.minY,
+                                width: host.frame.width * 2, height: host.frame.height * 2)
+            Motion.morph(host, source: source, transition: transition)
+            XCTAssertTrue(layer.animationKeys()?.contains(morphKey) == true,
+                          "no animation installed under \(morphKey) with flipped=\(flipped)")
+            let reading = try readStartPose(of: layer, within: 0.20)
+            window.orderOut(nil)
+            reports.append("flipped=\(flipped) source=\(source) \(reading.report)")
+            try skipUnlessPresentationWasLive(reading)
+
+            // k > 1 and still early: the ramp's tail reads ≈1, so >1.5 proves this is the grown pose.
+            XCTAssertGreaterThan(reading.scale.width, 1.5,
+                                 "sampled scale \(reading.scale.width) is not the k > 1 start pose "
+                                     + "(\(reports.last!))")
+            XCTAssertEqual(reading.rendered.minX, source.minX, accuracy: 1.0,
+                           "with isFlipped=\(flipped) the growing morph's start pose sat "
+                               + "\(String(format: "%.2f", reading.rendered.minX - source.minX)) pt off "
+                               + "its source in x; the bare midpoint puts it \(String(format: "%.1f", (reading.scale.width - 1) * host.frame.width / 2)) pt the far way (\(reports.last!))")
+            XCTAssertEqual(reading.rendered.minY, source.minY, accuracy: 1.0,
+                           "with isFlipped=\(flipped) the growing morph's start pose sat "
+                               + "\(String(format: "%.2f", reading.rendered.minY - source.minY)) pt off "
+                               + "its source in y (\(reports.last!))")
+        }
+        let report = reports.joined(separator: "\n")
+        print("anchor-compensation start-pose measurement (k > 1):\n\(report)")
+        NSLog("motion anchor compensation grow: \(report)")
+    }
+
+    /// Task 10's reviewer owed one measurement: the flipped fixture is a flipped window content view,
+    /// not a real scroll host. This is the scroll host -- an `NSScrollView` whose `documentView` is
+    /// flipped, with the morphing view a plain subview of the document, which is where a sidebar row
+    /// actually lives. The measurement answers the owed question with a wrinkle: the flipped content
+    /// view's layer *mirror* (`isGeometryFlipped == isFlipped`) does **not** reappear here -- a flipped
+    /// scroll document's layer reports `isGeometryFlipped == false` -- yet the frame equality does: the
+    /// host layer's resting frame still equals the host view's frame, and the rendered start pose still
+    /// lands on the source written in document-view coordinates. The morph rides the frame contract, not
+    /// the flag, so the mechanism holds inside a real scroll host, which is what the assertions below
+    /// measure rather than what they assume.
+    @MainActor
+    func testTheCompensationHoldsInsideARealFlippedScrollHost() throws {
+        let (window, scroll, document, host) = makeScrollFixture()
+        let layer = try XCTUnwrap(host.layer)
+        let transition = try XCTUnwrap(MotionPlan.lookup(.rowInsert))
+        let source = CGRect(x: host.frame.minX - 8, y: host.frame.minY,
+                            width: host.frame.width - 16, height: 0)
+
+        // The fixture is the claimed one: a layer-backed chain, so the layer tree mirrors the view tree
+        // and the rects below are comparable with the presentation geometry in the document's space.
+        let superlayerIsDocumentLayer = layer.superlayer === document.layer
+        NSLog("motion scroll fixture: document.isFlipped=\(document.isFlipped) "
+              + "document.layer.isGeometryFlipped=\(String(describing: document.layer?.isGeometryFlipped)) "
+              + "clip.layer.isGeometryFlipped=\(String(describing: scroll.contentView.layer?.isGeometryFlipped)) "
+              + "superlayerIsDocumentLayer=\(superlayerIsDocumentLayer) "
+              + "host.layer.frame=\(layer.frame) host.frame=\(host.frame) "
+              + "scrollHasLayer=\(scroll.layer != nil)")
+        XCTAssertTrue(superlayerIsDocumentLayer,
+                      "the host's layer is not parented to the document view's layer, so this fixture "
+                          + "is not measuring a scroll host")
+        XCTAssertEqual(layer.frame, host.frame,
+                       "inside the scroll host the layer's resting frame is no longer the view's "
+                           + "frame, so the rects the morph is handed are not in the layer's space")
+
+        Motion.morph(host, source: source, transition: transition)
+        XCTAssertTrue(layer.animationKeys()?.contains(morphKey) == true,
+                      "no animation installed under \(morphKey) inside the scroll host")
+        let reading = try readStartPose(of: layer, within: 0.20)
+        window.orderOut(nil)
+        try skipUnlessPresentationWasLive(reading)
+
+        let report = "source=\(source) \(reading.report)"
+        print("anchor compensation in a real flipped scroll host:\n\(report)")
+        NSLog("motion scroll host: \(report)")
+
+        XCTAssertLessThan(reading.scale.height, 0.5, "sample is not the start pose (\(report))")
+        XCTAssertEqual(reading.rendered.minX, source.minX, accuracy: 1.0,
+                       "inside an NSScrollView with a flipped documentView the start pose sat "
+                           + "\(String(format: "%.2f", reading.rendered.minX - source.minX)) pt off its "
+                           + "source in x (\(report))")
+        XCTAssertEqual(reading.rendered.minY, source.minY, accuracy: 1.0,
+                       "inside an NSScrollView with a flipped documentView the start pose sat "
+                           + "\(String(format: "%.2f", reading.rendered.minY - source.minY)) pt off its "
+                           + "source in y — the mechanism does NOT hold in a real scroll host (\(report))")
+    }
+
+    // MARK: - start-pose reading
+
+    /// What the presentation layer actually paints: the **rendered rect in the container's space** (the
+    /// resting frame's corners carried through the presentation's transform, which is applied about the
+    /// anchor), the sampled per-axis scale, and when the first readable frame landed.
+    private struct StartPoseReading {
+        let rendered: CGRect
+        let scale: CGSize
+        let elapsed: TimeInterval
+        var report: String {
+            let r = rendered
+            let rect = String(format: "(%.2f, %.2f, %.2f x %.2f)", r.minX, r.minY, r.width, r.height)
+            let k = String(format: "%.3fx%.3f", scale.width, scale.height)
+            let at = String(format: "%.0fms", elapsed * 1000)
+            return "rendered=\(rect) scale=\(k) readAt=\(at)"
+        }
+    }
+
+    /// Polls until the presentation tree exists (the first readable frame *is* the start pose within a
+    /// few percent of the ramp, as every other measurement in this file has found) and reads the
+    /// rendered rect off it: the layer's own resting `frame` and `anchorPoint` -- which `Motion` must not
+    /// change, and does not -- carried through `presentation().affineTransform()`, the animated
+    /// transform. In the superlayer's space, which is the container's space.
+    @MainActor
+    private func readStartPose(of layer: CALayer, within seconds: TimeInterval) throws -> StartPoseReading {
+        var reading: StartPoseReading?
+        let rest = layer.frame
+        let anchor = layer.anchorPoint
+        let started = Date()
+        drain(from: started, until: started.addingTimeInterval(seconds)) { now in
+            guard reading == nil, let presentation = layer.presentation() else { return }
+            let t = presentation.affineTransform()
+            let anchorAbs = CGPoint(x: rest.minX + rest.width * anchor.x,
+                                    y: rest.minY + rest.height * anchor.y)
+            let corners = [CGPoint(x: rest.minX, y: rest.minY), CGPoint(x: rest.maxX, y: rest.minY),
+                           CGPoint(x: rest.minX, y: rest.maxY), CGPoint(x: rest.maxX, y: rest.maxY)]
+            let drawn = corners.map {
+                CGPoint(x: anchorAbs.x + t.a * ($0.x - anchorAbs.x) + t.tx,
+                        y: anchorAbs.y + t.d * ($0.y - anchorAbs.y) + t.ty)
+            }
+            let xs = drawn.map(\.x), ys = drawn.map(\.y)
+            reading = StartPoseReading(
+                rendered: CGRect(x: xs.min()!, y: ys.min()!,
+                                 width: xs.max()! - xs.min()!, height: ys.max()! - ys.min()!),
+                scale: CGSize(width: t.a, height: t.d),
+                elapsed: now.timeIntervalSince(started))
+        }
+        return reading ?? StartPoseReading(rendered: .null, scale: .zero, elapsed: 0)
+    }
+
+    /// The one honest environment skip, same as the ramp test: an attached animation with no readable
+    /// presentation frame means this process never entered a render cycle.
+    private func skipUnlessPresentationWasLive(_ reading: StartPoseReading) throws {
+        try XCTSkipUnless(reading.scale != .zero || reading.rendered != .null,
+                          "presentation() never produced a frame for a morph attached under "
+                              + "\(morphKey): this process entered no render cycle; the live pass owns it")
+    }
+
+    /// An `NSScrollView` whose `documentView` is flipped, with one plain layer-backed row inside it --
+    /// the space a sidebar row really lives in. Every view on the chain is layer-backed so the layer
+    /// tree mirrors the view tree (asserted at the call site, not assumed).
+    @MainActor
+    private func makeScrollFixture()
+        -> (window: NSWindow, scroll: NSScrollView, document: NSView, host: NSView) {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 240),
+                              styleMask: [.titled],
+                              backing: .buffered,
+                              defer: false)
+        window.isReleasedWhenClosed = false
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 320, height: 240))
+        scroll.wantsLayer = true
+        scroll.hasVerticalScroller = false
+        scroll.drawsBackground = false
+        let document = FlippedContainer(frame: NSRect(x: 0, y: 0, width: 300, height: 1_200))
+        document.wantsLayer = true
+        let host = NSView(frame: NSRect(x: 40, y: 60, width: 200, height: 40))
+        host.wantsLayer = true
+        document.addSubview(host)
+        scroll.documentView = document
+        window.contentView = scroll
+
+        window.setFrameOrigin(NSPoint(x: -3_200, y: -1_800))
+        window.orderFrontRegardless()
+        let attached = Date()
+        drain(from: attached, until: attached.addingTimeInterval(0.06))
+        return (window, scroll, document, host)
     }
 
     // MARK: - fixtures

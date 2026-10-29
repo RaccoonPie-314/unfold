@@ -8,42 +8,38 @@ import XCTest
 /// so the offset is the rect gap as given and there is nothing to negate. That is the opposite of what
 /// this file asserted until Task 10 measured it: the old test pinned `flipped: true` to the negated
 /// offset, and the layer it drove moved away from its source instead of toward it.
+///
+/// There is consequently no `flipped` parameter here (Ruling AE deleted it): orientation is not an
+/// input this math reads, and an unread parameter implying a rule that does not exist is worse than no
+/// parameter. What the rects' space does not carry is the layer's anchor -- that compensation lives in
+/// `Motion` and is measured in `MotionDriverTests`, not asserted here.
 final class MotionGeometryTests: XCTestCase {
     private let final = CGRect(x: 100, y: 200, width: 300, height: 40)
 
     func testIdenticalRectsGiveIdentity() {
-        let morph = MotionGeometry.morph(source: final, final: final, flipped: false)
+        let morph = MotionGeometry.morph(source: final, final: final)
         XCTAssertEqual(morph.scale, CGSize(width: 1, height: 1))
         XCTAssertEqual(morph.translation, .zero)
     }
 
-    /// The gap in y is `source.midY - final.midY` in **both** orientations, because the layer's space is
-    /// the container's space: `+y` means up in an unflipped view and down in a flipped one, and the
-    /// rects handed to this function are written the same way. Flipping the sign for a flipped container
-    /// put the morph's start on the far side of the resting frame; the driver test measures that.
-    ///
-    /// `flipped` is consequently not an input this math reads. It stays in the signature because Ruling
-    /// AC #3 rules which view the driver must ask, and deleting Task 9's produced API is Task 11's call,
-    /// not a silent side effect of this round.
-    func testTheYOffsetIsTheRectGapInEitherOrientation() {
+    /// The gap in y is exactly `source.midY - final.midY`, because the layer's space is the container's
+    /// space: `+y` means up in an unflipped view and down in a flipped one, and the rects handed to this
+    /// function are written the same way. Negating that for a flipped container put the morph's start on
+    /// the far side of the resting frame; Task 10's driver test measures that, and Ruling AE retired the
+    /// parameter that pretended the choice existed.
+    func testTheYOffsetIsTheRectGapAsGiven() {
         let numericallyAbove = CGRect(x: 100, y: 260, width: 300, height: 40)
-        for flipped in [false, true] {
-            XCTAssertEqual(MotionGeometry.morph(source: numericallyAbove, final: final,
-                                                flipped: flipped).translation.height,
-                           60, "flipped=\(flipped): the offset is the gap the rects state, not its negation")
-        }
+        XCTAssertEqual(MotionGeometry.morph(source: numericallyAbove, final: final).translation.height,
+                       60, "the offset is the gap the rects state, not its negation")
         // And the mirror: a numerically smaller y is 60 the other way in either space.
         let numericallyBelow = CGRect(x: 100, y: 140, width: 300, height: 40)
-        for flipped in [false, true] {
-            XCTAssertEqual(MotionGeometry.morph(source: numericallyBelow, final: final,
-                                                flipped: flipped).translation.height,
-                           -60, "flipped=\(flipped)")
-        }
+        XCTAssertEqual(MotionGeometry.morph(source: numericallyBelow, final: final).translation.height,
+                       -60)
     }
 
     func testHeightRatioFollowsSourceOverTarget() {
         let halfHeight = CGRect(x: 100, y: 220, width: 300, height: 20)
-        XCTAssertEqual(MotionGeometry.morph(source: halfHeight, final: final, flipped: true).scale,
+        XCTAssertEqual(MotionGeometry.morph(source: halfHeight, final: final).scale,
                        CGSize(width: 1, height: 0.5))
     }
 
@@ -54,20 +50,18 @@ final class MotionGeometryTests: XCTestCase {
     func testHorizontalAxisIsNotAssumedIdentity() {
         let wide = CGRect(x: 100, y: 200, width: 300, height: 40)
         let narrowLeft = CGRect(x: 60, y: 200, width: 150, height: 40)
-        for flipped in [false, true] {
-            let morph = MotionGeometry.morph(source: narrowLeft, final: wide, flipped: flipped)
-            XCTAssertEqual(morph.scale.width, 0.5, "flipped=\(flipped)")
-            // midX 135 - midX 250: the narrow rect sits left of the wide one.
-            XCTAssertEqual(morph.translation.width, -115, "flipped=\(flipped)")
-            XCTAssertEqual(morph.translation.height, 0, "flipped=\(flipped)")
-        }
+        let morph = MotionGeometry.morph(source: narrowLeft, final: wide)
+        XCTAssertEqual(morph.scale.width, 0.5)
+        // midX 135 - midX 250: the narrow rect sits left of the wide one.
+        XCTAssertEqual(morph.translation.width, -115)
+        XCTAssertEqual(morph.translation.height, 0)
     }
 
     /// A zero-height gap is what `scaleFromGap` starts from. A literal 0 scale collapses the layer to
     /// nothing and the transform degenerates, so it is clamped and the caller fades in across the ramp.
     func testZeroSourcedDimensionsAreClampedNotZero() {
         let gap = CGRect(x: 100, y: 220, width: 300, height: 0)
-        let morph = MotionGeometry.morph(source: gap, final: final, flipped: true)
+        let morph = MotionGeometry.morph(source: gap, final: final)
         XCTAssertEqual(MotionGeometry.minimumScale, 0.02)
         XCTAssertEqual(morph.scale.height, MotionGeometry.minimumScale,
                        "a clamped zero must land exactly on the floor, not merely under 0.05")
@@ -81,7 +75,7 @@ final class MotionGeometryTests: XCTestCase {
     func testSourceLargerThanTargetIsClampedAtTheReciprocalCeiling() {
         // 100× the target on both axes -- comfortably past the 50× ceiling, so the clamp must bite.
         let huge = CGRect(x: 100, y: 200, width: 30_000, height: 4_000)
-        let morph = MotionGeometry.morph(source: huge, final: final, flipped: false)
+        let morph = MotionGeometry.morph(source: huge, final: final)
         let ceiling = 1 / MotionGeometry.minimumScale
         XCTAssertEqual(ceiling, 50)
         XCTAssertEqual(morph.scale.width, ceiling,
@@ -89,15 +83,15 @@ final class MotionGeometryTests: XCTestCase {
         XCTAssertEqual(morph.scale.height, ceiling)
         // Just inside the ceiling, no clamping happens: the bound is a bound, not a magnet.
         let exact = CGRect(x: 100, y: 200, width: 15_000, height: 2_000)
-        XCTAssertEqual(MotionGeometry.morph(source: exact, final: final, flipped: false).scale.width,
+        XCTAssertEqual(MotionGeometry.morph(source: exact, final: final).scale.width,
                        50, "a ratio landing exactly on the ceiling reads the same either way")
         let inside = CGRect(x: 100, y: 200, width: 12_000, height: 40)
-        XCTAssertEqual(MotionGeometry.morph(source: inside, final: final, flipped: false).scale.width,
+        XCTAssertEqual(MotionGeometry.morph(source: inside, final: final).scale.width,
                        40, "40× is under 50× and must pass through untouched")
     }
 
     func testEmptyTargetIsRefusedWithIdentity() {
-        let morph = MotionGeometry.morph(source: final, final: .zero, flipped: false)
+        let morph = MotionGeometry.morph(source: final, final: .zero)
         XCTAssertEqual(morph, .identity, "no scale or offset can be derived from a zero target")
     }
 }

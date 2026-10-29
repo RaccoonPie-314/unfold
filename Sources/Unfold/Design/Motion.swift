@@ -16,21 +16,15 @@ enum Motion {
     static func morph(_ view: NSView, source: CGRect, transition: Transition,
                       completion: (() -> Void)? = nil) {
         guard let layer = preparedLayer(for: view) else { return }
-        // Ruling D: `view.frame` *is* the rect in the superlayer's coordinates -- AppKit keeps a
-        // layer-backed view's geometry in the view's own space rather than a separate drawing space, so
-        // there is no conversion to do and no alias to name it. Ruling AC #3 settled which view answers
-        // the y direction: `view.frame` is expressed in the space of the **immediate superview**, so that
-        // view's `isFlipped` is the only correct thing to ask (the old `enclosingScrollView?.documentView`
-        // branch read a different space entirely, and was dead code for every host the shell has ever
-        // morphed -- the diagnostics cluster sits in a glass view inside a plain split item, with no
-        // scroll view in sight). The flipped container this round added to `MotionDriverTests` then
-        // measured what the flag is worth: the layer's space tracks the view's exactly, so the offset
-        // needs no correction in either orientation, and `MotionGeometry`'s negation was the bug. The
-        // read stays because Ruling AC #3 rules which view is the right one to ask and Task 9 pins the
-        // parameter; `MotionGeometry`'s comment records that it changes no result today, and Task 11 --
-        // where a source rect may be written in a *different* view's space -- is where that is settled.
-        let flipped = view.superview?.isFlipped ?? false
-        let start = MotionGeometry.morph(source: source, final: view.frame, flipped: flipped)
+        // Ruling D: `view.frame` *is* the rect in the superview layer's coordinates, and AppKit mirrors
+        // the view's flippedness into the layer tree (`isGeometryFlipped` mirrors `isFlipped`, measured
+        // in Task 10 with both container orientations), so the translation below runs along the very axis
+        // the rects are written on in either orientation and needs no flip correction -- that measurement
+        // is why `MotionGeometry` never had one to read (Ruling AE deleted the inert parameter).
+        // What the rects' space does *not* carry is the layer's anchor, and a transform paints about the
+        // anchor, so the centre displacement is corrected here -- from the real layer, never assumed.
+        let start = anchorCompensating(MotionGeometry.morph(source: source, final: view.frame),
+                                       for: layer)
 
         // Interrupt first, then animate: adding under the same key would replace the in-flight
         // animation anyway, but removing it explicitly is the sentence that says so.
@@ -67,6 +61,33 @@ enum Motion {
     }
 
     static let morphKey = "unfold.morph"
+
+    /// Turn `MotionGeometry`'s anchor-agnostic centre displacement into the translation that actually
+    /// lands the scaled layer on its source, using the layer's own `anchorPoint`.
+    ///
+    /// A layer paints its transform about the anchor: the point at rest `anchorAbs = frame.origin +
+    /// anchor · size` stays put under scaling, so a start pose `T · S` with per-axis scale `k` renders
+    /// its rect's origin at `source.origin + (1 − k) · size · (anchor − 0.5)` relative to the intended
+    /// source when the translation is the bare centre displacement -- i.e. it under-translates by
+    /// `(1 − k) · size · (0.5 − anchor)` per axis. Midpoint arithmetic lands a scaled rect on its source
+    /// only at `anchor == (0.5, 0.5)`; AppKit's default for a view layer is `(0, 0)`, where the miss is
+    /// `(1 − k) · size / 2` -- measured: 19.6 pt short on a 40 pt row scaled to 0.02 (Ruling AE).
+    ///
+    /// The term is derived from the layer's actual anchor at call time, never set from here and never
+    /// assumed a constant: AppKit manages a view layer's geometry and can reset it, and deriving rather
+    /// than hard-coding is what gives the term its sign for the growing case (`k > 1`, a source larger
+    /// than its target) as automatically as for the shrinking one.
+    private static func anchorCompensating(_ morph: MorphTransform, for layer: CALayer) -> MorphTransform {
+        let anchor = layer.anchorPoint
+        let size = layer.bounds.size
+        let dx = (1 - morph.scale.width) * size.width * (0.5 - anchor.x)
+        let dy = (1 - morph.scale.height) * size.height * (0.5 - anchor.y)
+        guard dx != 0 || dy != 0 else { return morph }
+        return MorphTransform(
+            scale: morph.scale,
+            translation: CGSize(width: morph.translation.width + dx,
+                                height: morph.translation.height + dy))
+    }
 
     /// Scale and translate together, in one keyframe-free transform animation so the two cannot drift.
     private static func animation(for transition: Transition, start: MorphTransform) -> CAAnimation {
