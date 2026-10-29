@@ -1,6 +1,23 @@
 import XCTest
 @testable import Unfold
 
+/// A cubic timing function maps time-progress to value-progress through a parameter, so the value at a
+/// given time is found by solving `x(t) = time` for `t`. Bisection is enough: the x curve is monotonic for
+/// control points inside [0, 1], which is the bound asserted below. `CAMediaTimingFunction` would evaluate
+/// this in one call but it is AppKit/QuartzCore, and this file stays Foundation-only on purpose.
+private func progress(of curve: (Double, Double, Double, Double), atTime time: Double) -> Double {
+    let (x1, y1, x2, y2) = curve
+    func axis(_ a: Double, _ b: Double, _ t: Double) -> Double {
+        3 * (1 - t) * (1 - t) * t * a + 3 * (1 - t) * t * t * b + t * t * t
+    }
+    var low = 0.0, high = 1.0, mid = 0.5
+    for _ in 0..<40 {
+        mid = (low + high) / 2
+        if axis(x1, x2, mid) < time { low = mid } else { high = mid }
+    }
+    return axis(y1, y2, mid)
+}
+
 /// The motion contract as data. Every rule corrected in review is an assertion here, so a
 /// regression is a failing test rather than "i cant tell if anything animated".
 final class MotionPlanTests: XCTestCase {
@@ -58,10 +75,9 @@ final class MotionPlanTests: XCTestCase {
 
     /// The band test above reads the x control points and discards the y pair as `_`, yet `y1` and `y2`
     /// are what set how much of the change is spent early. All four are also required to lie in [0, 1] at
-    /// runtime by `CAMediaTimingFunction`, so an out-of-range value is a crash waiting for Task 10.
-    /// Ruling Z's other half -- sampling the solved progress at 45 ms -- is held out: see the fix-round
-    /// note. Its threshold fails on the approved durations, and neither the data nor the threshold may
-    /// be bent here.
+    /// runtime by `CAMediaTimingFunction`, so an out-of-range value is a crash waiting for Task 10. The
+    /// [0, 1] bound is also what makes the x curve monotonic, and therefore what makes the bisection in
+    /// `testNoCurveSpendsMostOfItsChangeInFortyFiveMilliseconds` legal.
     func testEaseOutControlPointsStayInsideTheUnitSquare() {
         for t in MotionPlan.all {
             guard case .easeOut(let x1, let y1, let x2, let y2) = t.curve else { continue }
@@ -69,6 +85,30 @@ final class MotionPlanTests: XCTestCase {
                 XCTAssertGreaterThanOrEqual(value, 0, "\(t.id) \(label) below 0")
                 XCTAssertLessThanOrEqual(value, 1, "\(t.id) \(label) above 1")
             }
+        }
+    }
+
+    /// "It looked like nothing" is a statement about how much of the change is spent early, so this samples
+    /// the property itself: at an absolute 45 ms into a transition, no more than 60% of the change may be
+    /// gone. The ceiling is 0.6 rather than 0.5 because a fixed time is a larger fraction of a shorter
+    /// transition -- the *approved* curve already reaches 53.4% by 45 ms at 0.20 s (`selectionMorph`) and
+    /// 57.7% at 0.18 s (`promptDismiss`), while the curve this project was actually burned by,
+    /// `cubic-bezier(0.22, 1, 0.36, 1)`, sits at 64.7-76.5% across these four durations. The margin is
+    /// therefore about seven points, and it is the whole margin.
+    ///
+    /// The hierarchy, honestly: `testEachTransitionIsExactlyAsSpecified` is the primary guard. It pins each
+    /// of the seven ids to an exact `Curve`, so a *known* transition cannot be changed without failing
+    /// there. This test is the net for a **new** transition: a duration this plan has never sampled could
+    /// put an approved curve anywhere in that 46-58% band, so the control-point numbers alone cannot say
+    /// whether it spends its change too early and the sampled progress can. It is not claimed to catch
+    /// anything, for today's seven ids, that the exactness table does not already catch.
+    func testNoCurveSpendsMostOfItsChangeInFortyFiveMilliseconds() {
+        for t in MotionPlan.all {
+            guard case .easeOut(let x1, let y1, let x2, let y2) = t.curve else { continue }
+            let at45 = min(1, 0.045 / t.duration)
+            let spent = progress(of: (x1, y1, x2, y2), atTime: at45)
+            XCTAssertLessThanOrEqual(spent, 0.6,
+                "\(t.id) is \(String(format: "%.0f%%", spent * 100)) done by 45ms")
         }
     }
 
