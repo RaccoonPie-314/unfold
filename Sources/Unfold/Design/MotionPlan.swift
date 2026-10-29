@@ -2,7 +2,7 @@ import Foundation
 
 /// Which transition, with what timing, moving what.
 enum TransitionID: String, CaseIterable {
-    case rowInsert, rowRemove, selectionMorph, paneReveal, statusMorph
+    case paneReveal, statusMorph
     case promptPresent, promptDismiss
 }
 
@@ -22,9 +22,10 @@ enum Curve: Equatable {
 /// ramp inside a geometric transition, never a transition, and a type that cannot say "fade only" is
 /// how that stays true.
 enum Geometry {
-    case scaleFromGap      // a row unfolds out of the gap it is opening
-    case collapseToGap     // a row shrinks into the gap it is closing
     case growFromEdge      // a pane grows from the divider side
+    /// Kept for the `promptPresent` / `promptDismiss` shared-element travel (Plan 4). The Plan 3
+    /// sidebar-row-to-trigger-field line morph that also used it was removed by user decision
+    /// on 2026-10-29.
     case positionCrossfade // shared element from one rect to another
     case symbolMorph       // SF Symbol replacement plus a width change
 }
@@ -43,12 +44,6 @@ struct Transition: Equatable {
 /// (`MotionGeometry`), and the driver (Task 10) owns the conversion between the two.
 enum MotionPlan {
     static let all: [Transition] = [
-        .init(id: .rowInsert, duration: 0.26, curve: .spring(damping: 0.85),
-              geometry: .scaleFromGap, opacityRamp: 0.2),
-        .init(id: .rowRemove, duration: 0.22, curve: .easeOut(0.33, 1, 0.68, 1),
-              geometry: .collapseToGap, opacityRamp: 0.2),
-        .init(id: .selectionMorph, duration: 0.20, curve: .easeOut(0.33, 1, 0.68, 1),
-              geometry: .positionCrossfade, opacityRamp: 0.2),
         .init(id: .paneReveal, duration: 0.28, curve: .spring(damping: 0.85),
               geometry: .growFromEdge, opacityRamp: 0.2),
         .init(id: .statusMorph, duration: 0.24, curve: .easeOut(0.33, 1, 0.68, 1),

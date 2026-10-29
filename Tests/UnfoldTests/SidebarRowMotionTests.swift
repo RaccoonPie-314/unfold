@@ -3,28 +3,24 @@ import XCTest
 import UnfoldEngine
 @testable import Unfold
 
-/// Task 11's row motion, in two halves: the pane arithmetic that decides it, and which row view actually
-/// gets handed to the driver.
+/// The delete-selection correctness, in two halves: the landing arithmetic that decides it, and which
+/// row the real table selects after one `setRows`.
 ///
 /// The arithmetic (`SidebarRowDiffTests`) is a pure function of three arrays -- the ids shown, the ids
 /// arriving, the id the controller asked for -- so it has no excuse for being left to the live pass. It is
 /// also where the correctness half of the task lives: `setRows` used to answer a delete with "row 0", so
 /// two deletes with the confirmation unread destroyed a combo nobody chose.
 ///
-/// The other half (`SidebarRowMotionWiringTests`) asserts *which* row view carries the morph. That is
-/// assertable in-process because `Motion.morph` installs its transform synchronously: the animation keys
-/// are readable the instant `setRows` returns, with no render cycle and no stopwatch. What is **not**
-/// assertable here is what the pose looks like mid-flight. `MotionDriverTests` measures that against
-/// fixtures it builds itself, one view at a real frame; a row view laid out by `NSTableView`'s automatic
-/// heights, reused across indexes and repositioned by a reload, is not that, and "the row was smaller at
-/// 100 ms" would be timing luck rather than a proof. The live pass owns whether the rows read right.
+/// The wiring (`SidebarRowMotionWiringTests`) asserts the landing on a real `NSTableView`, and -- since
+/// Ruling AJ8 -- that exactly one `onSelect` delivery reports it, the invariant the editor's caret rule
+/// rests on. The row *animation* that used to sit between `reloadData()` and the selection here was
+/// removed by user decision on 2026-10-29 (the arriving row scaled while its neighbours jumped -- a flash,
+/// not motion); what these tests pin is the part that was correctness, not decoration.
 ///
 /// Mutation-proven by hand, in order: `min(anchor ?? 0, ...)` → `0` (the old row-0 landing) fails
-/// `testTwoDeletesWithoutReadingTheAlertNeverLandOnRowZero`; `moved` hard-coded to `true` fails
-/// `testDeletingTheLastRowDoesNotCollapseARowThatDidNotChange`; dropping the slot claim fails
-/// `testSeveralRowsLeavingClaimOnlyOneCollapsePerSlot`; `makeIfNecessary: true` → `false` in
-/// `animate(_:)` fails `testDeletingAMiddleRowAnimatesTheRowThatTookItsPlaceAndNobodyElse` (measured: a
-/// table that has just been reloaded hands back nil for every row until it is asked to realize one).
+/// `testTwoDeletesWithoutReadingTheAlertNeverLandOnRowZero`, and dropping the clamp to the end of the
+/// list fails `testLastDeleteIsClampedToTheEndOfWhatIsLeft`; restoring the unconditional `onSelect?` after
+/// `selectRowIndexes` makes both report-count tests below report **2**.
 final class SidebarRowDiffTests: XCTestCase {
     private let a = UUID(), b = UUID(), c = UUID(), d = UUID(), e = UUID()
 
@@ -37,8 +33,6 @@ final class SidebarRowDiffTests: XCTestCase {
         XCTAssertEqual(diff.landing, .landed(1),
                        "b left from index 1, so the selection has to land on index 1 — where its "
                            + "neighbour c now sits — and not on row 0")
-        XCTAssertEqual(diff.departures, [
-            SidebarRowDiff.Departure(id: b, oldIndex: 1, slotIndex: 1, collapses: true)])
         XCTAssertEqual(diff.selectedID(in: [a, c, d]), c,
                        "the neighbour of a middle delete is the row that moved up into its slot")
     }
@@ -67,16 +61,13 @@ final class SidebarRowDiffTests: XCTestCase {
     /// clamped to the end of the list instead of running off it.
     func testLastDeleteIsClampedToTheEndOfWhatIsLeft() {
         let diff = SidebarRowDiff.between(previous: [a, b, c], next: [a, b], requested: nil)
-        XCTAssertEqual(diff.landing, .landed(1), "index 2 does not exist any more; the clamp is the "
-                           + "same value the collapse needs")
+        XCTAssertEqual(diff.landing, .landed(1), "index 2 does not exist any more; the clamp decides")
         XCTAssertEqual(diff.selectedID(in: [a, b]), b)
     }
 
     func testFirstDeleteLandsOnTheNewFirstRow() {
         let diff = SidebarRowDiff.between(previous: [a, b, c], next: [b, c], requested: nil)
         XCTAssertEqual(diff.landing, .landed(0))
-        XCTAssertEqual(diff.departures, [
-            SidebarRowDiff.Departure(id: a, oldIndex: 0, slotIndex: 0, collapses: true)])
     }
 
     /// The combo the user is *typing into* can leave the list on its own (the filter matches `preview`),
@@ -94,62 +85,17 @@ final class SidebarRowDiffTests: XCTestCase {
     func testASelectionStillOnScreenIsReportedByTheTableNotThePane() {
         let diff = SidebarRowDiff.between(previous: [a, b, c], next: [a, b, c], requested: c)
         XCTAssertEqual(diff.landing, .requested(2))
-        XCTAssertTrue(diff.isEmpty, "the same rows in the same order must not animate anything")
     }
 
     func testAnEmptyListLandsNowhere() {
         let diff = SidebarRowDiff.between(previous: [a, b], next: [], requested: nil)
         XCTAssertEqual(diff.landing, .empty)
-        XCTAssertEqual(diff.departures.map(\.slotIndex), [nil, nil],
-                       "there is no slot to collapse into, and no index to clamp")
-        XCTAssertTrue(diff.departures.allSatisfy { !$0.collapses })
     }
 
-    // MARK: - which rows move
-
-    /// Row views are recycled: after a reload the row above the vanished slot is still the same combo in
-    /// the same place. Animating *it* is the defect the plan names ("a row morphing that did not change")
-    /// -- which is why `collapses` is a statement about the slot's content, not about the fact something left.
-    func testDeletingTheLastRowDoesNotCollapseARowThatDidNotChange() {
-        let diff = SidebarRowDiff.between(previous: [a, b, c], next: [a, b], requested: nil)
-        XCTAssertEqual(diff.departures, [
-            SidebarRowDiff.Departure(id: c, oldIndex: 2, slotIndex: 1, collapses: false)])
-        XCTAssertTrue(diff.arrivals.isEmpty)
-    }
-
-    func testAMiddleRowLeavingDoesHandItsSlotToADifferentCombo() {
-        let diff = SidebarRowDiff.between(previous: [a, b, c, d], next: [a, c, d], requested: nil)
-        XCTAssertEqual(diff.departures.first?.collapses, true,
-                       "index 1 now shows c where it showed b, so the slot really closed")
-    }
-
-    /// Filtering can evict several rows at once, and everything that clamps past the end of the list lands
-    /// on the same surviving index; only one collapse may be installed there, because two morphs on one row
-    /// view leave the second deleting the first mid-ramp.
-    func testSeveralRowsLeavingClaimOnlyOneCollapsePerSlot() {
-        let diff = SidebarRowDiff.between(previous: [a, b, c, d, e], next: [a, e], requested: nil)
-        XCTAssertEqual(diff.departures.map(\.id), [b, c, d])
-        XCTAssertEqual(diff.departures.map(\.collapses), [true, false, false],
-                       "index 1 now shows e where it showed b, so the slot did change hands — but three "
-                           + "departures all clamp to that one slot, and only the first may animate it")
-    }
-
-    func testAFilterThatRevealsARowAnnouncesOnlyTheRowThatArrived() {
-        let diff = SidebarRowDiff.between(previous: [a, c], next: [a, b, c], requested: nil)
-        XCTAssertEqual(diff.arrivals, [SidebarRowDiff.Arrival(id: b, index: 1)])
-        XCTAssertTrue(diff.departures.isEmpty)
-    }
-
-    /// A filter that leaves the visible set alone is the unchanged-target case: `setRows` still reloads,
-    /// but it must install no motion at all.
-    func testAFilterThatChangesTheVisibleSetNowChangesNothing() {
-        let diff = SidebarRowDiff.between(previous: [a, b, c], next: [a, b, c], requested: a)
-        XCTAssertTrue(diff.isEmpty)
-    }
-
-    func testReorderingWithoutArrivalsOrDeparturesIsStillNotMotion() {
+    /// Nothing left and nothing was selected: the landing falls to the top row, whatever reordering the
+    /// new list happens to contain.
+    func testReorderingWithNothingToAnchorLandsOnTheTopRow() {
         let diff = SidebarRowDiff.between(previous: [a, b, c], next: [c, a, b], requested: nil)
-        XCTAssertTrue(diff.isEmpty, "the same ids in a new order are not rows arriving")
         XCTAssertEqual(diff.landing, .landed(0), "nothing anchored the landing, so it falls to the top row")
     }
 }
@@ -165,64 +111,37 @@ private extension SidebarRowDiff {
     }
 }
 
-/// The wiring, on a real `NSTableView` in an offscreen-but-ordered-front window: after one `setRows`,
-/// exactly the row views the diff named carry `unfold.morph`, and no others -- and exactly one `onSelect`
-/// delivery reports the landing (Ruling AJ8), which is the invariant the editor's caret rule rests on.
+/// The wiring, on a real `NSTableView` in an offscreen-but-ordered-front window: after one `setRows`, the
+/// table has selected exactly the row the landing names -- and exactly one `onSelect` delivery reports it
+/// (Ruling AJ8), the invariant the editor's caret rule rests on.
 ///
-/// The baseline pass runs while the window is still ordered out, which is the same condition that keeps a
-/// launch from animating every row onto the screen -- so what the assertions below see is the motion of one
-/// delete, not the residue of the first paint.
+/// The baseline pass runs while the window is still ordered out, which is the same condition that kept a
+/// launch from animating every row onto the screen before the row motion was removed on 2026-10-29.
 final class SidebarRowMotionWiringTests: XCTestCase {
     @MainActor
-    func testDeletingAMiddleRowAnimatesTheRowThatTookItsPlaceAndNobodyElse() throws {
+    func testDeletingAMiddleRowSelectsTheNeighbourThatTookItsPlace() throws {
         let (sidebar, rows) = try presentedSidebar(count: 5)
         let table = sidebar.listTableView
         var remaining = rows
         remaining.remove(at: 2)
         sidebar.setRows(remaining, selecting: nil)
 
-        XCTAssertEqual(morphedRows(table), [2],
-                       "the row that left from index 2 handed its slot to a neighbour: index 2 is what "
-                           + "closes, and the rows either side of it did not move")
-        XCTAssertEqual(table.selectedRow, 2, "the selection has to land on the same row the collapse does")
+        XCTAssertEqual(table.selectedRow, 2,
+                       "the row that left from index 2 handed its slot to a neighbour: the selection has "
+                           + "to land on index 2, where that neighbour now sits")
     }
 
-    /// The recycling guard, measured on live row views rather than argued from arrays: deleting the last
-    /// row leaves the row above exactly where it was, so nothing may be morphed -- and the pane must not
-    /// "help" by animating that unchanged neighbour.
+    /// Deleting the last row has no row below moving up: the selection still lands on the clamped
+    /// neighbour index -- the row above -- rather than running off the end or falling to row 0.
     @MainActor
-    func testDeletingTheLastRowAnimatesNobody() throws {
+    func testDeletingTheLastRowLandsOnTheRowAbove() throws {
         let (sidebar, rows) = try presentedSidebar(count: 4)
         var remaining = rows
         remaining.removeLast()
         sidebar.setRows(remaining, selecting: nil)
 
-        XCTAssertEqual(morphedRows(sidebar.listTableView), [],
-                       "the slot kept the same combo, so the only row available to morph was one that had "
-                           + "not changed")
         XCTAssertEqual(sidebar.listTableView.selectedRow, 2,
                        "the landing is still the clamped neighbour index")
-    }
-
-    @MainActor
-    func testARowArrivingUnderAFilterAnimatesItselfAlone() throws {
-        let (sidebar, rows) = try presentedSidebar(count: 3)
-        sidebar.setRows([rows[0], rows[1]], selecting: rows[0].id)
-        XCTAssertEqual(morphedRows(sidebar.listTableView), [], "the rows that stayed are not arrivals")
-
-        sidebar.setRows([rows[0], rows[2], rows[1]], selecting: rows[0].id)
-        XCTAssertEqual(morphedRows(sidebar.listTableView), [1],
-                       "only the row the filter put back on screen unfolds, and it unfolds at index 1")
-    }
-
-    /// The unchanged-target rule on the real pane: the same rows again, with the same selection, must
-    /// install nothing -- this is what a keystroke in the filter that changes nothing costs.
-    @MainActor
-    func testRepeatingTheSameRowsInstallsNoMotion() throws {
-        let (sidebar, rows) = try presentedSidebar(count: 3)
-        sidebar.setRows(rows, selecting: rows[1].id)
-        XCTAssertEqual(morphedRows(sidebar.listTableView), [],
-                       "a reload of an identical visible set is not a set of arrivals")
     }
 
     // MARK: - Ruling AJ8: the landing is reported exactly once
@@ -265,7 +184,7 @@ final class SidebarRowMotionWiringTests: XCTestCase {
     }
 
     /// The same invariant on the other landing shape: a delete at the **top** of the list, whose landing is
-    /// row 0 (no neighbour above, so `collapseGap` and the clamp both come from the slot itself). Still one
+    /// row 0 (no neighbour above, so the clamp comes from the slot itself). Still one
     /// delivery -- a fix that suppressed the report on one branch only would pass the test above and leave
     /// this one firing twice.
     @MainActor
@@ -292,7 +211,7 @@ final class SidebarRowMotionWiringTests: XCTestCase {
 
     /// A sidebar in a real window with `count` rows already presented, ordered front off the corner of any
     /// plausible display (on-screen-ness is what gates AppKit realizing row views, exactly as in
-    /// `MotionDriverTests`), and left with **no** morph installed.
+    /// `MotionDriverTests`).
     @MainActor
     private func presentedSidebar(count: Int) throws -> (SidebarViewController, [Combo]) {
         _ = NSApplication.shared
@@ -308,22 +227,10 @@ final class SidebarRowMotionWiringTests: XCTestCase {
         window.isReleasedWhenClosed = false
         window.contentView = sidebar.view
         windowsToClose.append(window)
-        // Ordered out: the baseline pass must install no motion, or every assertion below would read the
-        // first paint's arrivals instead of the delete's.
         sidebar.setRows(rows, selecting: rows.first?.id)
         window.setFrameOrigin(NSPoint(x: -3_200, y: -1_800))
         window.orderFrontRegardless()
         return (sidebar, rows)
-    }
-
-    /// Which visible rows currently carry the driver's transform. Read with `makeIfNecessary: false` so
-    /// this cannot realize a row view and manufacture the very animation it is looking for.
-    @MainActor
-    private func morphedRows(_ table: NSTableView) -> [Int] {
-        (0..<max(table.numberOfRows, 0)).filter { row in
-            table.rowView(atRow: row, makeIfNecessary: false)?.layer?.animationKeys()?
-                .contains(Motion.morphKey) == true
-        }
     }
 
     /// Runs the main loop for `seconds`, so a selection notification AppKit defers to the next turn arrives
@@ -344,4 +251,3 @@ final class SidebarRowMotionWiringTests: XCTestCase {
         super.tearDown()
     }
 }
-

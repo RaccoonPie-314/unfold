@@ -9,7 +9,7 @@ import XCTest
 /// view's own `contentView`.
 ///
 /// Three measurements on the real controller window, in the same offscreen-but-ordered-front technique
-/// `SelectionOverlayTests` uses, plus one sampled ramp behind the render-cycle skip every motion test in
+/// `MotionDriverTests` uses, plus one sampled ramp behind the render-cycle skip every motion test in
 /// this suite already carries:
 ///
 /// 1. **The target is the item view.** `MainWindowController.statusPill` is the `NSGlassEffectView` the

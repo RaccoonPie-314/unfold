@@ -43,14 +43,6 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
     /// `ConsistencyTest` types into this and reads it back.
     var tryTextView: NSTextView { tryView }
 
-    /// The trigger field's frame, in screen coordinates -- where a selection morph lands. The morph
-    /// itself runs on `MainWindowController`'s window-level overlay (Ruling AG), not on anything the
-    /// pane hosts; this accessor is the only geometry the pane still owes the motion.
-    var triggerFieldFrameInWindow: CGRect? {
-        guard let window = view.window else { return nil }
-        return window.convertToScreen(triggerField.convert(triggerField.bounds, to: nil))
-    }
-
     // MARK: - Construction
 
     override func loadView() {

@@ -8,7 +8,7 @@ import XCTest
 /// with the stored one checked and named in the tooltip.
 ///
 /// What is asserted here and what is not, stated plainly: the item is built through the **real delegate
-/// call on a real `MainWindowController`** (the fixture technique `SelectionOverlayTests` uses), so the
+/// call on a real `MainWindowController`** (the fixture technique `StatusPillMotionTests` uses), so the
 /// identifier switch, the menu construction, the target wiring and the identifier lists are all the
 /// production objects. What no in-process test can decide is the pixels of a live toolbar -- whether the
 /// item renders, where it sits, and whether clicking it opens the menu -- and the *persist-and-apply*
@@ -17,8 +17,9 @@ import XCTest
 /// strand an appearance override in a domain this repo does not own. Those are the plan's checklist
 /// items, not tests that assert nothing.
 final class AppearanceToolbarTests: XCTestCase {
-    /// The identifier as a literal, same discipline as `SelectionOverlayTests.morphKey` and
-    /// `ThemeTests.testPersistedContractIsPinned`: renaming it in production has to fail here.
+    /// The identifier as a literal, same discipline as `ThemeTests.testPersistedContractIsPinned` and
+    /// the literal morph key `StatusPillMotionTests` asserts against: renaming it in production has to
+    /// fail here.
     private static let appearance = NSToolbarItem.Identifier("unfold.appearance")
     private static let pause = NSToolbarItem.Identifier("unfold.pause")
     private static let status = NSToolbarItem.Identifier("unfold.status")
@@ -168,8 +169,8 @@ final class AppearanceToolbarTests: XCTestCase {
     }
 
     /// A real controller over a scratch store in a temporary directory, window ordered front off the
-    /// corner of any display -- copied from `SelectionOverlayTests`, including why nothing at the keyboard
-    /// layer moves: the coordinator is built untrusted, so no tap is ever attached.
+    /// corner of any display -- the same fixture `StatusPillMotionTests` builds, including why nothing at
+    /// the keyboard layer moves: the coordinator is built untrusted, so no tap is ever attached.
     @MainActor
     private func makeController() throws -> MainWindowController {
         _ = NSApplication.shared

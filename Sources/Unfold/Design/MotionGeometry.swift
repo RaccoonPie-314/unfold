@@ -53,25 +53,10 @@ enum MotionGeometry {
     // MARK: - source poses
     //
     // The rects a call site *derives* from a final frame, as opposed to measures off another view. They live
-    // here, next to the math that reads them, because the production call sites
-    // (`SidebarViewController.animate(_:)`, `MainWindowController.toggleDiagnostics`) and `MotionProbe` need
-    // the same one: the probe exists to log the geometry a transition actually performs, so a probe holding
-    // its own copy of the rect -- or one rect for all five, which is what it used to hand (Ruling AJ4) --
-    // measures its own invention instead of the plan.
-
-    /// The gap an arriving row unfolds out of: its own baseline edge, zero height. A flipped table puts
-    /// `maxY` on the line the row's text sits on, so the gap opens below the text and the row grows into it.
-    static func insertionGap(for final: CGRect) -> CGRect {
-        CGRect(x: final.minX, y: final.maxY, width: final.width, height: 0)
-    }
-
-    /// The line a departed row's gap closes onto: the top edge of the row that took its slot. With
-    /// contiguous rows the neighbour above shares that exact line (`above.maxY == occupant.minY`), which is
-    /// why `animate(_:)` can read the real neighbour when it has one, fall back to this when it does not,
-    /// and hand `rowRemove` the same rect either way.
-    static func collapseGap(for final: CGRect) -> CGRect {
-        CGRect(x: final.minX, y: final.minY, width: final.width, height: 0)
-    }
+    // here, next to the math that reads them, because the production call site
+    // (`MainWindowController.toggleDiagnostics`) and `MotionProbe` need the same one: the probe exists to
+    // log the geometry a transition actually performs, so a probe holding its own copy of the rect is
+    // measuring its own invention instead of the plan (Ruling AJ4).
 
     /// A revealed pane's leading edge: zero width, full height, on the divider side, so the content unfolds
     /// away from the divider rather than out of a generic baseline.

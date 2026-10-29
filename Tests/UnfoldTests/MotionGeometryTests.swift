@@ -57,7 +57,7 @@ final class MotionGeometryTests: XCTestCase {
         XCTAssertEqual(morph.translation.height, 0)
     }
 
-    /// A zero-height gap is what `scaleFromGap` starts from. A literal 0 scale collapses the layer to
+    /// A zero-height gap is what a row-style grow starts from. A literal 0 scale collapses the layer to
     /// nothing and the transform degenerates, so it is clamped and the caller fades in across the ramp.
     func testZeroSourcedDimensionsAreClampedNotZero() {
         let gap = CGRect(x: 100, y: 220, width: 300, height: 0)

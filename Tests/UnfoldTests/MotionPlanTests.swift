@@ -21,8 +21,7 @@ private func progress(of curve: (Double, Double, Double, Double), atTime time: D
 /// The motion contract as data. Every rule corrected in review is an assertion here, so a
 /// regression is a failing test rather than "i cant tell if anything animated".
 final class MotionPlanTests: XCTestCase {
-    private let required: [TransitionID] = [.rowInsert, .rowRemove, .selectionMorph, .paneReveal,
-                                            .statusMorph, .promptPresent, .promptDismiss]
+    private let required: [TransitionID] = [.paneReveal, .statusMorph, .promptPresent, .promptDismiss]
 
     func testEveryNamedTransitionExists() {
         for id in required { XCTAssertNotNil(MotionPlan.lookup(id), "\(id) is missing") }
@@ -33,9 +32,6 @@ final class MotionPlanTests: XCTestCase {
     /// real numbers and the id-to-curve-kind mapping is otherwise unpinned.
     func testEachTransitionIsExactlyAsSpecified() {
         let expected: [TransitionID: (duration: Double, curve: Curve, ramp: Double)] = [
-            .rowInsert: (0.26, .spring(damping: 0.85), 0.2),
-            .rowRemove: (0.22, .easeOut(0.33, 1, 0.68, 1), 0.2),
-            .selectionMorph: (0.20, .easeOut(0.33, 1, 0.68, 1), 0.2),
             .paneReveal: (0.28, .spring(damping: 0.85), 0.2),
             .statusMorph: (0.24, .easeOut(0.33, 1, 0.68, 1), 0.2),
             .promptPresent: (0.22, .spring(damping: 0.85), 0.2),
@@ -100,10 +96,10 @@ final class MotionPlanTests: XCTestCase {
     /// entirely at 0.32 s, at 52.8%).
     ///
     /// The hierarchy, honestly: `testEachTransitionIsExactlyAsSpecified` is the primary guard. It pins
-    /// each of the seven ids to an exact `Curve`, so a *known* transition cannot be changed without
+    /// each of the declared ids to an exact `Curve`, so a *known* transition cannot be changed without
     /// failing there. This test is the net for a **new** transition: its duration is unknowable, and only
     /// a duration-independent sample can say whether an in-band set of control points still spends the
-    /// change too early. It is not claimed to catch anything, for today's seven ids, that the exactness
+    /// change too early. It is not claimed to catch anything, for today's four ids, that the exactness
     /// table does not already catch.
     func testNoCurveSpendsMostOfItsChangeEarlyInTheTimeline() {
         for t in MotionPlan.all {
@@ -121,11 +117,10 @@ final class MotionPlanTests: XCTestCase {
     /// still has value if anyone adds a `default:`. The name check is `==` rather than `contains`, because
     /// `.positionCrossfade` ends in the substring "fade" and a membership set is what actually refuses it.
     func testEveryTransitionMovesGeometry() {
-        let allowed: Set<String> = ["scaleFromGap", "collapseToGap", "growFromEdge",
-                                    "positionCrossfade", "symbolMorph"]
+        let allowed: Set<String> = ["growFromEdge", "positionCrossfade", "symbolMorph"]
         for t in MotionPlan.all {
             switch t.geometry {
-            case .scaleFromGap, .collapseToGap, .growFromEdge, .positionCrossfade, .symbolMorph:
+            case .growFromEdge, .positionCrossfade, .symbolMorph:
                 break
             }
             XCTAssertFalse(String(describing: t.geometry) == "fade", "\(t.id)")

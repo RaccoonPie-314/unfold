@@ -34,7 +34,7 @@ final class MotionDriverTests: XCTestCase {
     func testPresentationSamplesMoveWhileTheMorphRuns() throws {
         let (window, content, host) = makeFixture(flipped: false)
         let layer = try XCTUnwrap(host.layer)
-        let transition = try XCTUnwrap(MotionPlan.lookup(.rowInsert))
+        let transition = try XCTUnwrap(MotionPlan.lookup(.paneReveal))
         let source = CGRect(x: host.frame.minX, y: host.frame.maxY, width: host.frame.width, height: 0)
         var completedAt: TimeInterval?
         let started = Date()
@@ -98,7 +98,7 @@ final class MotionDriverTests: XCTestCase {
                       "no in-flight reading caught the layer smaller than its resting 40 pt "
                           + "(\(readings.count) readings, peak \(String(format: "%.1f", peak))): the "
                           + "transform moved nothing")
-        // Every reading well past the 260 ms spring is after the completion that removes it: the tree has
+        // Every reading well past the 280 ms spring is after the completion that removes it: the tree has
         // to be back at the resting height, not parked mid-morph.
         XCTAssertFalse(settled.isEmpty, "no reading was taken after the clip")
         for reading in settled {
@@ -147,22 +147,22 @@ final class MotionDriverTests: XCTestCase {
     ///
     /// Numbers measured on this machine (mass 1, `initialVelocity` 0, the driver's own animation object):
     /// ```
-    /// rowInsert      duration 0.260  stiffness 1267.6  damping 60.53  settlingDuration 0.2600
     /// paneReveal     duration 0.280  stiffness 1093.0  damping 56.20  settlingDuration 0.2800
     /// promptPresent  duration 0.220  stiffness 1770.5  damping 71.53  settlingDuration 0.2200
     /// ```
-    /// The textbook seed `k = (4/(ζ·duration))²` -- the ruling's arithmetic -- alone reports 0.5115 /
+    /// The textbook seed `k = (4/(ζ·duration))²` -- the ruling's arithmetic -- alone reports
     /// 0.5508 / 0.4328 s, **1.967× its own duration**, because `CASpringAnimation.settlingDuration` is
     /// `≈7.87/σ` (about 1/2600 of the step) rather than the `4/σ` 2% criterion. Measured at mass 1:
     /// σ·settlingDuration = 7.27 at ζ = 0.4, 7.87 at ζ = 0.85, 8.30 at ζ = 0.95, and it stops scaling
     /// with σ at all for ζ ≥ 1 (a flat 0.6 s). `Motion.spring` seeds with the ruling's formula and then
     /// closes the gap against the number Core Animation actually reports, so this assertion runs against
     /// the driver's own object rather than against a copy of the arithmetic. Mutation-proven both ways:
-    /// dropping the correction leaves 0.5115 s (fails here), and the old `4/response²` leaves 1.296 s.
+    /// dropping the correction leaves 0.5508 s (fails here), and the old `4/response²` leaves 1.296 s.
     ///
     /// What that spring does at the shipped ζ = 0.85: it overshoots by `exp(-πζ/√(1-ζ²))` = **0.63% of
-    /// the step** -- 0.25 pt on a 40 pt row -- crossing its target at ~138 ms, peaking at ~167 ms and
-    /// inside CA's settle threshold at 260 ms. Second-order systems only overshoot for ζ < 1, so 0.63%
+    /// the step** -- 0.25 pt on a 40 pt row -- crossing its target at ~138 ms for a 0.26 s clip (the row
+    /// transition's, before its removal on 2026-10-29), peaking at ~167 ms and inside CA's settle threshold
+    /// at the clip's end. Second-order systems only overshoot for ζ < 1, so 0.63%
     /// is the whole of it: the old "look for a 2-5% overshoot" described the truncation, not the spring.
     @MainActor
     func testEverySpringSettlesInsideItsOwnDuration() throws {
@@ -172,7 +172,7 @@ final class MotionDriverTests: XCTestCase {
         for transition in MotionPlan.all {
             guard case .spring(let damping) = transition.curve else { continue }
             springs += 1
-            // The geometry a real `scaleFromGap` morph is handed: a 200×40 row unfolding out of a
+            // The geometry a zero-gap morph is handed: a 200×40 row unfolding out of a
             // zero-height gap 20 pt above its baseline.
             let start = MotionGeometry.morph(source: CGRect(x: 40, y: 100, width: 200, height: 0),
                                              final: CGRect(x: 40, y: 60, width: 200, height: 40))
@@ -205,7 +205,7 @@ final class MotionDriverTests: XCTestCase {
 
         print("spring settle measurements:\n" + lines.joined(separator: "\n"))
         for line in lines { NSLog("motion spring: \(line)") }
-        XCTAssertEqual(springs, 3, "the plan's three springs are what this test measures")
+        XCTAssertEqual(springs, 2, "the plan's two springs are what this test measures")
     }
 
     // MARK: - finding 2: interruption
@@ -218,8 +218,8 @@ final class MotionDriverTests: XCTestCase {
     /// key was empty from 0.107 s to 0.155 s, and the interrupted morph's completion fired -- the
     /// interrupting spring deleted 60 ms into its own 280 ms ramp.
     ///
-    /// Timeline: A = `rowInsert` (0.26 s) at t=0, interrupted at t=0.10 by B = `paneReveal` (0.28 s, so B
-    /// is in flight until ~0.38 while A's completion is due at ~0.26). The layer is polled every ~5 ms
+    /// Timeline: A = `paneReveal` (0.28 s) at t=0, interrupted at t=0.10 by B = another `paneReveal` (so B
+    /// is in flight until ~0.38 while A's completion is due at ~0.28). The layer is polled every ~5 ms
     /// rather than sampled at one fixed instant, because when the stale completion runs is Core
     /// Animation's to choose. The invariant: from the interrupt until B's own end, whatever holds
     /// `unfold.morph` **is B's animation object** -- compared by identity, the same relation the driver's
@@ -229,7 +229,8 @@ final class MotionDriverTests: XCTestCase {
     func testAnInterruptedMorphLeavesTheInterruptingOneAlone() throws {
         let (window, _, host) = makeFixture(flipped: false)
         let layer = try XCTUnwrap(host.layer)
-        let rowInsert = try XCTUnwrap(MotionPlan.lookup(.rowInsert))
+        // Both halves of the pair run the same surviving spring: A is the morph being interrupted,
+        // B the one installed 100 ms into A's ramp.
         let paneReveal = try XCTUnwrap(MotionPlan.lookup(.paneReveal))
         let source = CGRect(x: host.frame.minX, y: host.frame.maxY, width: host.frame.width, height: 0)
 
@@ -240,7 +241,7 @@ final class MotionDriverTests: XCTestCase {
         var pollsWhileInFlight = 0
 
         let started = Date()
-        Motion.morph(host, source: source, transition: rowInsert) {
+        Motion.morph(host, source: source, transition: paneReveal) {
             firstCompletedAt = Date().timeIntervalSince(started)
         }
         drain(from: started, until: started.addingTimeInterval(0.10))
@@ -354,7 +355,7 @@ final class MotionDriverTests: XCTestCase {
                                + "(\(reading.report))")
             // An assertion about a sign read after the ramp is over is an assertion about zero, so the
             // displacement still has to be most of the gap. This is also what proves the reading was
-            // taken early: `rowInsert` starts at scale 0.02, so a translation still above half of `dy`
+            // taken early: the morph starts at scale 0.02, so a translation still above half of `dy`
             // is the first frames of the morph, not its tail.
             XCTAssertGreaterThanOrEqual(abs(reading.displacement), abs(reading.dy) * 0.5,
                                         "the earliest reading had already given up "
@@ -395,7 +396,7 @@ final class MotionDriverTests: XCTestCase {
     private func measureUpwardMorph(flipped: Bool) throws -> UpwardMorphReading {
         let (window, content, host) = makeFixture(flipped: flipped)
         let layer = try XCTUnwrap(host.layer)
-        let transition = try XCTUnwrap(MotionPlan.lookup(.rowInsert))
+        let transition = try XCTUnwrap(MotionPlan.lookup(.paneReveal))
 
         // In a non-flipped superview +y runs up, so the gap above the row sits beyond its maxY edge; in
         // a flipped superview +y runs down, so the same-looking gap sits beyond its minY edge.
@@ -465,7 +466,7 @@ final class MotionDriverTests: XCTestCase {
         for flipped in [false, true] {
             let (window, _, host) = makeFixture(flipped: flipped)
             let layer = try XCTUnwrap(host.layer)
-            let transition = try XCTUnwrap(MotionPlan.lookup(.rowInsert))
+            let transition = try XCTUnwrap(MotionPlan.lookup(.paneReveal))
             let source = CGRect(x: host.frame.minX - 8, y: host.frame.minY,
                                 width: host.frame.width - 16, height: 0)
             Motion.morph(host, source: source, transition: transition)
@@ -554,7 +555,7 @@ final class MotionDriverTests: XCTestCase {
     func testTheCompensationHoldsInsideARealFlippedScrollHost() throws {
         let (window, scroll, document, host) = makeScrollFixture()
         let layer = try XCTUnwrap(host.layer)
-        let transition = try XCTUnwrap(MotionPlan.lookup(.rowInsert))
+        let transition = try XCTUnwrap(MotionPlan.lookup(.paneReveal))
         let source = CGRect(x: host.frame.minX - 8, y: host.frame.minY,
                             width: host.frame.width - 16, height: 0)
 
