@@ -88,7 +88,7 @@ on 2026-10-29, not from memory:
 
 ## Architecture
 
-Eleven shipped units, plus the two Plan 4 adds (`PromptPanelController.swift`,
+Ten shipped units, plus the two Plan 4 adds (`PromptPanelController.swift`,
 `Sources/UnfoldEngine/Prompt.swift`), which are listed here so one architecture covers both plans.
 `MotionPlan` and `MotionGeometry` deliberately import Foundation only, exactly like `MenuStatus`, so the
 motion table and the morph math are testable in `Tests/UnfoldTests` without touching a view.
@@ -96,16 +96,15 @@ motion table and the morph math are testable in `Tests/UnfoldTests` without touc
 | Unit | One job | Depends on |
 |---|---|---|
 | `Sources/Unfold/Design/MotionPlan.swift` | The transition table as values: name, duration, curve, geometry kind. | Foundation |
-| `Sources/Unfold/Design/Motion.swift` | Translate one `MotionPlan` entry into Core Animation on layer-backed views. `Motion.morph(_:source:transition:completion:)` is the only code that touches a `CAAnimation`, and it retargets whatever is in flight instead of queueing one. There is deliberately **no** `Motion.stop` (Ruling E): removing the in-flight animation on the next target *is* the stop, and nothing else calls one until Plan 4's panel dismissal asks for it. The FLIP helper is **not** here -- it is the Foundation-only `MotionGeometry.swift` below, plus the source-pose helpers (`insertionGap`, `collapseGap`, `revealEdge`) the production call sites and `MotionProbe` share. | MotionPlan, MotionGeometry, QuartzCore, AppKit |
+| `Sources/Unfold/Design/Motion.swift` | Translate one `MotionPlan` entry into Core Animation on layer-backed views. `Motion.morph(_:source:transition:completion:)` is the only code that touches a `CAAnimation`, and it retargets whatever is in flight instead of queueing one. There is deliberately **no** `Motion.stop` (Ruling E): removing the in-flight animation on the next target *is* the stop, and nothing else calls one until Plan 4's panel dismissal asks for it. The FLIP helper is **not** here -- it is the Foundation-only `MotionGeometry.swift` below, plus the source-pose helper (`revealEdge`) the production call site and `MotionProbe` share -- `insertionGap` and `collapseGap` left with the row transitions on 2026-10-29. | MotionPlan, MotionGeometry, QuartzCore, AppKit |
 | `Sources/Unfold/Design/MotionGeometry.swift` | Pure rect math: two rects → scale + centre displacement (`MorphTransform`), anchor-agnostic by design because `Motion` reads the real layer's anchor. Foundation only, so the morph math is assertable without a view. | Foundation |
 | `Sources/Unfold/Design/Theme.swift` | Corner radii, spacing scale, type scale, the appearance-preference enum and its persistence. | AppKit |
 | `Sources/Unfold/AppShell/Glass.swift` | `wrap(_:cornerRadius:padding:interactive:)` and `windowBackground()`. The `tint:` parameter is deleted: no call site uses it, and color on glass is a budget spent only on status symbols. **There is no container** -- the `NSGlassEffectContainerView` this section first specified was withdrawn during execution (Ruling V), and the file lives in `AppShell/` because both of its functions build views, not tokens. | `NSGlassEffectView` |
 | `Sources/Unfold/Design/Contrast.swift` | The `(element, text color, backing, floor)` table and the WCAG math that reads it. It **certifies**; the panes do not read their colours through it (Ruling AJ9 -- routing them through a lookup is Plan 4's). | AppKit |
-| `Sources/Unfold/Design/SelectionOverlayLineView.swift` | The shell's only custom-drawn view: the 1 pt separator line `selectionMorph` travels, `separatorColor` filled, `hitTest` nil so an overlay over the window cannot eat a click. In `Design/` because that is where this spec puts drawing (Ruling AJ2); the *instance* is owned by the coordinator, whose two rects live in different panes. | AppKit |
-| `Sources/Unfold/AppShell/SidebarViewController.swift` | Source list, filter, selection landing, row insert/remove motion, `ComboRowView`. | Theme, Motion, MotionGeometry |
-| `Sources/Unfold/AppShell/EditorViewController.swift` | The editor form, the commit-as-you-type paths, the hint line. Moved from `MainWindowController` verbatim. | Theme, Motion |
+| `Sources/Unfold/AppShell/SidebarViewController.swift` | Source list, filter, selection landing (`SidebarRowDiff`), `ComboRowView`. The row insert/remove motion this row used to name was removed by user decision on 2026-10-29; the landing rule it shared with that animation stays. | Theme |
+| `Sources/Unfold/AppShell/EditorViewController.swift` | The editor form, the commit-as-you-type paths, the hint line. Moved from `MainWindowController` verbatim. | Theme |
 | `Sources/Unfold/AppShell/DiagnosticsViewController.swift` | The counters block, the glass test-button cluster, the test result line. | Theme, Glass |
-| `Sources/Unfold/AppShell/MainWindowController.swift` | Window, toolbar, split assembly, appearance toggle, cross-pane wiring, the combo model path, and the diagnostics actions the responder chain reaches. **Measured 798 lines at the tip of this pass, not the "near 570" this row first claimed**: Task 5 did land it at 568, then Tasks 10-12 added 242 lines of cross-pane orchestration -- the three morphs, the shared status vocabulary, the window-level overlay, the appearance item -- reaching 810 at Ruling AJ2's review, and this fix wave then took 12 lines back out (the dead `addRemoveItems` surface deleted, and the shell's only custom-drawing class `SelectionOverlayLineView` moved into `Design/`) to land at 798 -- none of which the row's own "570" arithmetic ever counted. Ruling T's decision stands, and Ruling AJ2 upholds it while overturning only the number: splitting the toolbar delegate into a same-type extension file would move code without moving a responsibility, and is deliberately not done. | the four panes |
+| `Sources/Unfold/AppShell/MainWindowController.swift` | Window, toolbar, split assembly, appearance toggle, cross-pane wiring, the combo model path, and the diagnostics actions the responder chain reaches. **Measured 740 lines at this writing**: the row previously claimed 798 at the tip of the AJ-fix pass (after Tasks 10-12 added the cross-pane orchestration and the fix wave took 12 lines back out), and the 2026-10-29 user-decision removal then took out the window-level selection overlay, its morph and the row-animation call sites -- what is left of the motion wiring is `paneReveal` on the diagnostics toggle and `statusMorph` on the pill. Ruling T's decision stands, and Ruling AJ2 upholds it while overturning only the number: splitting the toolbar delegate into a same-type extension file would move code without moving a responsibility, and is deliberately not done. | the four panes |
 | `Sources/Unfold/AppShell/PromptPanelController.swift` | The `NSPanel` that collects placeholder values and hands them back. | `Prompt`, Motion, Theme |
 | `Sources/UnfoldEngine/Prompt.swift` | Pure: `Combo.parts` → ordered `PromptField`s; submitted values → composed `[Part]`; refusal rules. In the engine, not `UnfoldMac`, because composing a replacement is the engine's job and this way `UnfoldCTL` and `Tests/UnfoldEngineTests` reach it without a GUI target. | Foundation, `Template` |
 
@@ -222,32 +221,38 @@ Two pairs a unit test cannot decide, so they are measured on pixels instead:
 (`.spring(damping:)` -- **one** knob, because the transition's `duration` *is* the settle time and the
 stiffness is derived to fit it (Ruling AC #1) -- or `.easeOut` with four unlabeled `Double` control
 points) and a `Geometry`
-(`scaleFromGap`, `collapseToGap`, `growFromEdge`, `positionCrossfade`, `symbolMorph`). There is no `Kind`
+(`growFromEdge`, `positionCrossfade`, `symbolMorph`). There is no `Kind`
 enum and no `Motion.run(_:)`: `Motion.morph(_:source:transition:completion:)` is the only code that touches
 Core Animation, and the FLIP helper is a separate Foundation-only unit -- `MotionGeometry.morph(source:final:)`
 turns two rects into a `MorphTransform` of scale plus centre displacement, and `Motion` adds the layer's own
-anchor term before installing it. The source poses a call site *derives* (rather than measures off another
-view) are `MotionGeometry`'s too -- `insertionGap`, `collapseGap`, `revealEdge` -- so the production panes and
-`MotionProbe` cannot drift.
+anchor term before installing it. The one source pose a call site *derives* (rather than measures off another
+view) is `MotionGeometry`'s too -- `revealEdge` -- so the production pane and `MotionProbe` cannot drift.
+(`positionCrossfade` has no wired production user today: it belongs to the Plan 4 prompt pair, and the
+`MainWindowController.toggleDiagnostics` call site is what reads `growFromEdge`.)
 
 | id | Trigger | Geometry | Duration | Curve |
 |---|---|---|---|---|
-| `rowInsert` | `+`, or a filter that reveals a row | The new row unfolds out of a zero-height gap on **its own baseline** (`MotionGeometry.insertionGap`). It is the only thing that moves: `setRows` calls `reloadData()`, so every row is already at its final position when the pose installs -- the arriving row grows inside a gap that has **already opened**, and the rows below it jump rather than reflow. | 260ms | spring, damping 0.85 -- measured overshoot **0.63% of the step** |
-| `rowRemove` | confirmed delete | The slot the vanished row left collapses onto the **neighbour baseline above it** (`MotionGeometry.collapseGap`). Nothing closes over time either, and the deleted row's own text is never seen shrinking (Ruling AH): `reloadData()` puts the neighbour into the slot first, so what animates is the row that took the slot's place, collapsing onto the line above it. | 220ms | easeOut |
-| `selectionMorph` | sidebar selection change | A 1 pt `separatorColor` line -- the window-level `SelectionOverlayLineView` -- travels from the sidebar row's rect to the trigger field's centre line, hidden at rest. Neither the Trigger **caption** nor the field itself crossfades: the pane is re-displayed, not animated, and the travelling line is the whole shared element. | 200ms | easeOut |
 | `paneReveal` | stethoscope → Diagnostics | the pane's content grows from the divider edge; the divider itself moves through `NSSplitViewController`'s own animation | 280ms | spring |
 | `statusMorph` | tap state change | SF Symbol replacement plus the **wrapped toolbar item view** -- `MainWindowController.statusPill`, the `NSGlassEffectView` AppKit's toolbar sizes -- springing its width to fit the new label, so material and content travel as one object (Ruling AJ7; it used to morph the content stack inside that view, which snapped the box under a springing content) | 240ms | easeOut |
-| `promptPresent` | a placeholder combo fires | the panel scales out of the caret's screen rect | 220ms | spring |
-| `promptDismiss` | confirm or cancel | reverse into the caret rect | 180ms | easeOut |
+| `promptPresent` | a placeholder combo fires | the panel scales out of the caret's screen rect | 220ms | spring (declared only -- wired in Plan 4) |
+| `promptDismiss` | confirm or cancel | reverse into the caret rect | 180ms | easeOut (declared only -- wired in Plan 4) |
 
-**Why the row motion is only half a motion, and what would settle it (open decision for the live pass).**
-The two row rows above are what ships; "neighbours reflow" and "the gap closes" are what this table first
-promised, and Ruling AJ6 ruled that the spec describes reality rather than the promise being kept by faking a
-translate in code nobody has seen on screen. The upgrade is a real motion capability: either drive the list
-with `insertRows`/`removeRows` so AppKit animates the reflow, or give each neighbour its own inverted
-per-row translate FLIP. **The one observation that decides it:** add a row in the middle of a real list and
-watch the rows *below* it. If they jump and that reads wrong to you, do the upgrade; if it reads as a row
-arriving, this table stays as written.
+**Why `rowInsert`, `rowRemove` and `selectionMorph` are gone (user decision, 2026-10-29).** They shipped,
+and the user's live verdict was "what with the white stuff coming from left side every time i select other
+trigger word? any adding or removing, just a flash... remove it". The travelling 1 pt `separatorColor` line
+(`SelectionOverlayLineView` at window level, sidebar row → trigger field) was the "white stuff", and the
+row poses were the flash: `setRows` calls `reloadData()`, so every row is already at its final position
+when a transform pose installs -- the arriving row scaled while its neighbours jumped, which reads as a
+blink, not motion. All three ids, the overlay view, the window wiring, the source-pose helpers
+`insertionGap`/`collapseGap`, and the tests that pinned them are deleted, not dormant. What survived is
+what the user did not object to -- `paneReveal` and `statusMorph`, wired -- plus the Plan 4 declarations.
+
+**The open decision, restated for whatever list motion comes next.** A transform on a
+`reloadData()`-final layout is not real list motion; the earlier version of this section described the
+jump-and-scale honestly and called the upgrade an observation to make on screen. The observation has now
+been made and the answer was "remove it". Real list motion needs the table's own row animation -- an
+inverted per-row translate FLIP on every neighbour, or `insertRows`/`removeRows` so AppKit animates the
+reflow. Nothing short of that belongs in this table again.
 
 **Why 0.63% is the overshoot and ~5% is gone.** The pass adopted the measured number: at ζ = 0.85 a step
 peaks at `exp(-πζ/√(1-ζ²))` = 0.63% of itself (0.25 pt on a 40 pt row), which is why the motion driver's band
@@ -259,7 +264,7 @@ rest of the way. One clock per spring was the correction that mattered more than
 Rules, all of them derived from a correction the user already made:
 
 - **Geometry carries the motion.** Opacity is used only as an anti-flash ramp inside the first ~20%
-  of a timeline. `MotionPlanTests` asserts every transition's `Geometry` is one of the five shipped cases and
+  of a timeline. `MotionPlanTests` asserts every transition's `Geometry` is one of the three shipped cases and
   that the type cannot name a fade-only transition at all; since Ruling AJ4, `MotionProbe` also *reads*
   `Geometry` to pick each transition's source pose, so the enum is no longer declared-and-unread.
 - **No front-loaded curves on short transitions.** `cubic-bezier(0.33, 1, 0.68, 1)` at 200-300ms,
@@ -333,8 +338,9 @@ post-delete selection, is fixed in the next section.
 
 **Selection after delete.** The base `reloadRows` landed the selection on **row 0** when the selected combo
 was gone, so two fast deletes with the alert unread destroyed the wrong combo. The sidebar now keeps the
-deleted row's own index and selects `min(index, count-1)` -- the neighbour -- which is also what `rowRemove`'s
-collapse target needs to know. Both are the same change.
+deleted row's own index and selects `min(index, count-1)` -- the neighbour. That rule shipped inside
+`SidebarRowDiff`, which also used to compute the `rowRemove` collapse target; when the row transitions were
+removed on 2026-10-29 the collapse half went and the landing half stayed -- it is correctness, not motion.
 
 Panel layout: captions left of fields, `⌘↩` confirm, Escape cancel, Tab order top-to-bottom, the
 action bar in one glass container. The panel is not resizable, is `.floating` level so it survives
@@ -363,8 +369,8 @@ slide, and its `informativeText` names the file it writes, which it already does
 
 ## Testing
 
-- `MotionPlanTests` (`Tests/UnfoldTests`) -- Foundation-only: seven ids present, every `Geometry` one of the
-  five shipped cases (a fade-only transition cannot be named), durations in 150-320ms, no curve steeper than
+- `MotionPlanTests` (`Tests/UnfoldTests`) -- Foundation-only: four ids present (two wired, two declared for
+  Plan 4), every `Geometry` one of the three shipped cases (a fade-only transition cannot be named), durations in 150-320ms, no curve steeper than
   the approved control points, springs positive. This is where "native animation for every component" becomes
   a checkable claim.
 - `ContrastTests` (`Tests/UnfoldTests`) -- the color-pair table resolved under `.aqua` and
@@ -397,7 +403,8 @@ PID, because both the tap and the materials are the parts a unit test cannot rea
    logs the layer's *presentation* bounds, scale and transform offset at eight timestamps to the launch log,
    so motion is reported as numbers -- a transition that logs one size eight times is not animating. Each one
    is run from **its own source pose**, chosen by the `Geometry` the plan declares for it and taken from the
-   same `MotionGeometry` helper the production call site uses (Ruling AJ4); the probe used to hand all five the
+   same `MotionGeometry` helper the production call site uses (Ruling AJ4); the probe used to hand every
+   wired transition the
    same zero-height gap, which made `paneReveal`'s and `statusMorph`'s numbers describe a grow neither of them
    performs. Chosen
    over a window-capturing shell script because it samples the animation's own intermediate state rather
@@ -416,7 +423,8 @@ This is one spec and two implementation plans, because they touch different halv
 and each has its own verification surface:
 
 - **Plan 3 -- Glass, appearance, motion.** `Sources/Unfold` only. The floor bump, the pane split,
-  `Design/`, the seven transitions, the appearance toggle, `MotionPlanTests`, `ContrastTests`,
+  `Design/`, the four transitions (two wired, two deferred to Plan 4 -- three more shipped and were removed
+  by user decision on 2026-10-29), the appearance toggle, `MotionPlanTests`, `ContrastTests`,
   screenshots. Nothing in `UnfoldMac` or `UnfoldEngine` changes, so the keyboard layer stays
   document-verified and untouched.
 - **Plan 4 -- The placeholder prompt.** `UnfoldEngine` (`Prompt`), `UnfoldMac` (`RoutingDecision`,

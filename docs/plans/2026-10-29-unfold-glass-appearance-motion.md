@@ -11,9 +11,10 @@
 > `Glass.wrap` calls plus `Glass.windowBackground()` -- and `Glass.swift` lives in `Sources/Unfold/AppShell/`,
 > not `Design/`, because both of its functions build views. Two more clauses in the same paragraph are also
 > not what shipped: there is no `Glass.container` (grep for it in `Sources/` is empty), and the coordinator is
-> not thin -- it measures **798** lines at the tip of this pass (810 at Ruling AJ2's review of `43a527c`, before
+> not thin -- it measured **798** lines at the tip of that pass (810 at Ruling AJ2's review of `43a527c`, before
 > this fix wave moved the `SelectionOverlayLineView` class into `Design/` and deleted the dead `addRemoveItems`
-> surface out of it), which the spec's architecture row now says
+> surface out of it -- the class itself was then deleted outright by the 2026-10-29 user decision), and
+> measures **740** since; the spec's architecture row carries the current number
 > (Ruling AJ2 upheld Ruling T's decision not to split it further, and overturned only the number).
 
 **Tech Stack:** Swift 6.4 (SwiftPM, `swift-tools-version: 6.2`), AppKit, QuartzCore (`CASpringAnimation`, `CATransform3D`), XCTest, `vtool`/`screencapture` for verification. No third-party dependencies.
@@ -81,9 +82,9 @@ Created:
 | `Sources/Unfold/Design/Theme.swift` | Type, radius, spacing tokens; `AppearancePreference` and its persistence |
 | `Sources/Unfold/Design/Contrast.swift` | The (element, text color, backing, floor) table and the WCAG math that reads it |
 | `Sources/Unfold/Design/MotionPlan.swift` | The transition table as values. Foundation only, no AppKit |
-| `Sources/Unfold/Design/MotionGeometry.swift` | Pure rect math: two rects → scale/translation. Foundation + CoreGraphics. *(No `flippedness` input -- Ruling AE deleted the parameter; see Task 9. The three source-pose helpers `insertionGap` / `collapseGap` / `revealEdge` were added here by Ruling AJ4 so the panes and `MotionProbe` share one spelling.)* |
+| `Sources/Unfold/Design/MotionGeometry.swift` | Pure rect math: two rects → scale/translation. Foundation + CoreGraphics. *(No `flippedness` input -- Ruling AE deleted the parameter; see Task 9. The three source-pose helpers `insertionGap` / `collapseGap` / `revealEdge` were added here by Ruling AJ4 so the panes and `MotionProbe` share one spelling; `insertionGap` and `collapseGap` were deleted with the row transitions by user decision on 2026-10-29, leaving `revealEdge`.)* |
 | `Sources/Unfold/Design/Motion.swift` | The only Core Animation in the shell: apply a plan entry to a layer-backed view |
-| `Sources/Unfold/AppShell/SidebarViewController.swift` | Source list, filter, row diffing, row motion, `ComboRowView` |
+| `Sources/Unfold/AppShell/SidebarViewController.swift` | Source list, filter, selection landing, `ComboRowView` *(row motion and `selectedRowFrame` removed 2026-10-29; `SidebarRowDiff` now carries only the landing rule)* |
 | `Sources/Unfold/AppShell/EditorViewController.swift` | The editor form, commit paths, hint line, "Try it" field, path label |
 | `Sources/Unfold/AppShell/DiagnosticsViewController.swift` | Counters block, glass test-button cluster, result line, motion probe |
 | `Sources/Unfold/AppShell/MotionProbe.swift` | Runs each transition and logs measured presentation-frame rects |
@@ -116,7 +117,7 @@ deprecated `selectionHighlightStyle = .sourceList` assignment, and every macOS 2
 | 8 | `MotionPlan.swift` + `MotionPlanTests` | the seven transitions exist as data |
 | 9 | `MotionGeometry.swift` + `MotionGeometryTests` | morph math proven for both coordinate spaces |
 | 10 | `Motion.swift` + `MotionProbe` + probe button | one transition measured to move geometrically |
-| 11 | Wire `rowInsert`, `rowRemove`, `selectionMorph`, `paneReveal`, `statusMorph`; neighbour selection | all five measured; delete lands on the neighbour instead of row 0 |
+| 11 | ~~Wire `rowInsert`, `rowRemove`, `selectionMorph`, `paneReveal`, `statusMorph`; neighbour selection~~ -- cut to `paneReveal` + `statusMorph` by user decision, 2026-10-29; neighbour selection stands | `paneReveal` and `statusMorph` measured; delete lands on the neighbour instead of row 0 |
 | 12 | Appearance toolbar item, shared status vocabulary, two-appearance capture | toggle works, menu and pill agree |
 
 ---
@@ -714,6 +715,11 @@ Changed: `Sources/Unfold/AppShell/SidebarViewController.swift` (new),
 > is the shell's only custom-drawing view. The pane keeps only the
 > accessor the morph needs -- `triggerFieldFrameInWindow`. `EditorViewController` is otherwise exactly as
 > specified here.
+>
+> **Postscript (user decision, 2026-10-29):** the whole shared-element line went -- `SelectionOverlayLineView`,
+> its window-level hosting and `triggerFieldFrameInWindow` are deleted, because what the user saw of it on
+> screen was a stray white bar, not a morph. This paragraph is the record of what shipped, not the code.
+> See Task 11's Superseded callout.
 
 **Files:**
 - Create: `Sources/Unfold/AppShell/EditorViewController.swift`
@@ -2091,6 +2097,20 @@ wrong space.
 ---
 
 ### Task 11: Wire the five transitions and fix where selection lands after a delete
+
+> **Superseded by user decision, 2026-10-29.** The five-transition list this task (and Task 8's
+> `MotionPlan` table) specified has been cut to two. The user's live verdict on the shipped app was
+> *"what with the white stuff coming from left side every time i select other trigger word? any adding or
+> removing, just a flash... remove it"* -- so `selectionMorph`, `rowInsert` and `rowRemove` are deleted:
+> the transition ids and table rows, `SelectionOverlayLineView` (which never should have been
+> user-visible -- a "hidden at rest" overlay that paints a travelling line across the window is exactly
+> the kind of surface a person reads as a bug), `MainWindowController`'s overlay wiring and
+> `morphSelectionIntoTriggerField()`, `sidebar.selectedRowFrame`, `editor.triggerFieldFrameInWindow`,
+> `MotionGeometry.insertionGap` / `collapseGap`, `SidebarViewController.animate(_:)`, and the probe arms
+> and tests for all of them. `MotionProbe` now runs the two surviving ids. What this task also shipped --
+> the neighbour landing rule (`min(index, count-1)`) and the report-exactly-once behaviour (Ruling AJ8) --
+> is correctness, not motion, and stays, together with its tests. Everything below is kept as the record
+> of what was specified and measured; it no longer describes the code.
 
 **Files:**
 - Modify: `Sources/Unfold/AppShell/SidebarViewController.swift` (`setRows`, row motion, neighbour selection)
