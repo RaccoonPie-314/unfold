@@ -2237,8 +2237,12 @@ private static let appearance = NSToolbarItem.Identifier("unfold.appearance")
 
 /// Three states, with Match System first and reachable from the same control: the failure mode of an
 /// in-app switch is that a person gets stuck in it, which is exactly what `dark-mode.md` warns about.
-private func buildAppearanceItem(_ identifier: NSToolbarItem.Identifier) -> NSToolbarItem {
-    let item = NSToolbarItem(itemIdentifier: identifier)
+private func buildAppearanceItem(_ identifier: NSToolbarItem.Identifier) -> NSMenuToolbarItem {
+    // `NSToolbarItem.menu` does not exist on the macOS 27 SDK -- `NSToolbarItem.h` exposes only
+    // `menuFormRepresentation` -- so the menu-bearing subclass is the only compilable shape. Its
+    // `showsIndicator` defaults to YES, which adds a menu chevron the plain-symbol neighbours do not
+    // carry: check it on pixels and set it to `false` if it reads as clutter.
+    let item = NSMenuToolbarItem(itemIdentifier: identifier)
     item.label = "Appearance"
     item.paletteLabel = "Appearance"
     item.toolTip = AppearancePreference.read().tooltip
