@@ -962,9 +962,11 @@ cd "$REPO_ROOT"
 grep -c "" Sources/Unfold/AppShell/MainWindowController.swift
 swift build 2>&1 | tail -2 && swift test 2>&1 | grep -E "Test Suite 'All tests' failed|with [1-9][0-9]* failures" || echo GREEN
 ```
-Expected: the controller's line count reported; confirm it is under 300. Build clean, `GREEN`. Then
-on the installed build: open Diagnostics with the stethoscope item and ⌥⌘D, press every button, confirm
-the counters still update once a second and the pane still collapses.
+Expected: the controller's line count reported -- **the bar is "the three panes are out", which lands near
+568, not "under 300"** (Ruling T: the ~150/<300 numbers were arithmetic that never fitted the plan's own
+instruction to keep the model path and the eight diagnostics actions on the controller). Build clean,
+`GREEN`. Then on the installed build: open Diagnostics with the stethoscope item and ⌥⌘D, press every
+button, confirm the counters still update once a second and the pane still collapses.
 
 - [ ] **Step 5: Stop for review** -- no commit.
 
