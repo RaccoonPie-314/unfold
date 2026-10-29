@@ -3,7 +3,6 @@ import Foundation
 /// Which transition, with what timing, moving what.
 enum TransitionID: String, CaseIterable {
     case selectionSlide
-    case paneReveal
     case promptPresent, promptDismiss
 }
 
@@ -23,15 +22,16 @@ enum Curve: Equatable {
 /// ramp inside a geometric transition, never a transition, and a type that cannot say "fade only" is
 /// how that stays true.
 enum Geometry {
-    case growFromEdge      // a pane grows from the divider side
     /// Kept for the `promptPresent` / `promptDismiss` shared-element travel (Plan 4). The Plan 3
     /// sidebar-row-to-trigger-field line morph that also used it was removed by user decision
     /// on 2026-10-29.
     case positionCrossfade // shared element from one rect to another
     /// The glass selection pill's travel: it slides from the row it was on to the row it lands on and
-    /// arrives having grown the last few percent into size, so a *whole box* moves -- unlike
-    /// `.growFromEdge`, which opens a closed axis. The user asked for exactly this on 2026-10-29; it
-    /// stays inside the list and is not the rejected travelling line (Ruling AK).
+    /// arrives having grown the last few percent into size, so a *whole box* moves -- unlike a closing
+    /// gap. The user asked for exactly this on 2026-10-29; it stays inside the list and is not the
+    /// rejected travelling line (Ruling AK). The pane content transform and the pill width spring the
+    /// two previous geometry cases named are gone: the first was the "line plus snap" the user
+    /// rejected, the second a width change the fixed status pill must never have.
     case slideAndGrow
 }
 
@@ -51,13 +51,23 @@ enum MotionPlan {
     static let all: [Transition] = [
         .init(id: .selectionSlide, duration: 0.24, curve: .spring(damping: 0.85),
               geometry: .slideAndGrow, opacityRamp: 0.2),
-        .init(id: .paneReveal, duration: 0.28, curve: .spring(damping: 0.85),
-              geometry: .growFromEdge, opacityRamp: 0.2),
         .init(id: .promptPresent, duration: 0.22, curve: .spring(damping: 0.85),
               geometry: .positionCrossfade, opacityRamp: 0.2),
         .init(id: .promptDismiss, duration: 0.18, curve: .easeOut(0.33, 1, 0.68, 1),
               geometry: .positionCrossfade, opacityRamp: 0.2),
     ]
+
+    /// The Diagnostics divider's clock. Deliberately **not** a `Transition`: the divider moves through
+    /// AppKit's own `NSAnimationContext` path (`MainWindowController.toggleDiagnostics`) -- the only
+    /// animated divider mechanism this SDK offers, measured against the headers -- and a `Transition`
+    /// would claim a `MotionGeometry` pose this motion does not have. The pane-content transform that
+    /// used to ride on top of the system's divider move was the "line plus a snap" the user rejected
+    /// on 2026-10-29; one clock means exactly this pair of numbers, and the content, the divider and
+    /// the re-truncating middle pane all move because AppKit lays the split view out, not because the
+    /// shell transforms anything. The values still live in the plan so every timing in the shell has
+    /// one home, and `MotionPlanTests` keeps them in the perceived band.
+    static let dividerDuration: Double = 0.28
+    static let dividerCurve: Curve = .easeOut(0.33, 1, 0.68, 1)
 
     /// `promptPresent` and `promptDismiss` are declared here and wired in Plan 4, whose prompt panel is
     /// the only thing that uses them. They belong to the plan now so the table is the complete contract

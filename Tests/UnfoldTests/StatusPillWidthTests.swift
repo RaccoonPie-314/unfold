@@ -9,8 +9,8 @@ import XCTest
 /// The user's words on 2026-10-29: *"the status 'Ready and paused' i want it a fixed size without
 /// changing when toggling it."* The shell answers that with a reservation -- the label is pinned to the
 /// widest `shortText` rendered in the pill's own font (`MainWindowController.statusLabelFont`) -- and
-/// deletes the `statusMorph` transition, whose entire subject was the width change that may now never
-/// happen. This file asserts the property directly rather than the animation that used to hide it:
+/// deletes the pill-width transition, whose entire subject was the width change that may now
+/// never happen. This file asserts the property directly rather than the animation that used to hide it:
 ///
 /// 1. **Fitting size is identical for every state.** The pill's wrapped glass view resolves to the
 ///    same `NSSize` whichever status is rendered into it -- the measurable half of "fixed size".
@@ -70,7 +70,7 @@ final class StatusPillWidthTests: XCTestCase {
             let before = pill.frame
             render(status, into: label, symbol: symbol)
             // A display pass per state -- the toolbar re-measures the wrapped view on its own clock,
-            // the same one `StatusPillMotionTests` (deleted with `statusMorph`) measured once.
+            // the same one the deleted pill-motion test measured once.
             drain(0.12) { _ in
                 for (name, view) in [("pill", pill), ("viewer", pill.superview)] {
                     let keys = view?.layer?.animationKeys() ?? []
@@ -92,7 +92,7 @@ final class StatusPillWidthTests: XCTestCase {
         }
         XCTAssertTrue(alienHolders.isEmpty,
                       "something animates the pill or the toolbar item viewer during a state change "
-                          + "(\(alienHolders)) — the width motion was deleted with `statusMorph`, and "
+                          + "(\(alienHolders)) — the width motion was deleted with its transition, and "
                           + "a fixed pill gives any such animation nothing to say")
     }
 

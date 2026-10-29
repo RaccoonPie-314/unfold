@@ -4,16 +4,17 @@ import XCTest
 
 /// Ruling AJ4: the probe may not measure a geometry no transition uses.
 ///
-/// Before that ruling `MotionProbe` handed every wired transition the same zero-height full-width gap
-/// under the host, so `paneReveal`'s logged numbers described a vertical grow the probe had invented.
-/// These assertions are pure (no render cycle, no window): they pin the *shape* each wired transition is
-/// given, and that it comes from the same helper the production call site calls -- which is what makes the
-/// probe's log evidence about the app rather than about the probe. The row-motion and selection-line
-/// transitions were removed by user decision on 2026-10-29; what is asserted here is the surviving set.
+/// The probe used to hand every wired transition the same zero-height full-width gap under the host,
+/// so a grow was logged as a vertical shape the transition never performed. These assertions are pure
+/// (no render cycle, no window): they pin the *shape* each wired transition is given, and that it comes
+/// from the same helper the production call site calls -- which is what makes the probe's log evidence
+/// about the app rather than about the probe. The row-motion and selection-line transitions were
+/// removed by user decision on 2026-10-29 and the diagnostics reveal became a divider move outside
+/// `Motion.morph`; what is asserted here is the surviving set plus Plan 4's declared geometry.
 ///
 /// Mutation-proven: reverting `sourceRect(for:final:)` to a single shared rect fails
-/// `testTheProbeNoLongerHandsEveryTransitionTheSameRect` and every shape assertion below that is not the
-/// gap shape, because the gap sits under `maxY` and the rest are not.
+/// `testTheProbeNoLongerHandsEveryTransitionTheSameRect` and the shape assertions below, because the
+/// slide's source is left-of-and-inside the host and a shared rect is not.
 final class MotionProbeTests: XCTestCase {
     /// A 200×120 stack at a non-trivial origin, so a rect that ignores `minX`/`minY` cannot pass by luck.
     private let final = CGRect(x: 40, y: 100, width: 200, height: 120)
@@ -30,19 +31,6 @@ final class MotionProbeTests: XCTestCase {
     }
 
     // MARK: - one shape per call site
-
-    @MainActor
-    func testPaneRevealIsGivenAZeroWidthRectOnTheLeadingEdge() {
-        let source = MotionProbe.sourceRect(for: plan(.paneReveal), final: final)
-        XCTAssertEqual(source, MotionGeometry.revealEdge(for: final),
-                       "the probe must use the helper `toggleDiagnostics` calls")
-        XCTAssertEqual(source.width, 0,
-                       "paneReveal is a horizontal grow: a full-width source is how it came to be logged "
-                           + "as a vertical one")
-        XCTAssertEqual(source.height, final.height)
-        XCTAssertEqual(source.minX, final.minX, "it unfolds away from the divider, its own leading edge")
-        XCTAssertEqual(source.minY, final.minY)
-    }
 
     /// `selectionSlide` moves a **whole box**: the probe's source is the helper's previous-row rect shrunk
     /// about its centre, so it must sit left of the host (the travel) and inside it (the grow) -- a source
@@ -69,10 +57,10 @@ final class MotionProbeTests: XCTestCase {
     func testEveryGeometryCaseIsCoveredAndNoTwoCasesShareARect() {
         // `Geometry` was declared and unread for the whole pass; the probe reading it is what makes the
         // per-transition shapes a compile-time-exhaustive property rather than a copy-paste.
-        let cases: [Geometry] = [.growFromEdge, .positionCrossfade, .slideAndGrow]
+        let cases: [Geometry] = [.positionCrossfade, .slideAndGrow]
         var byGeometry: [Geometry: CGRect] = [:]
         for geometry in cases {
-            let transition = Transition(id: .paneReveal, duration: 0.2, curve: .spring(damping: 0.85),
+            let transition = Transition(id: .selectionSlide, duration: 0.2, curve: .spring(damping: 0.85),
                                         geometry: geometry, opacityRamp: 0.2)
             byGeometry[geometry] = MotionProbe.sourceRect(for: transition, final: final)
         }
@@ -82,9 +70,6 @@ final class MotionProbeTests: XCTestCase {
                            + "probe collapses them again (\(byGeometry))")
         for (geometry, rect) in byGeometry {
             switch geometry {
-            case .growFromEdge:
-                XCTAssertTrue(rect.width == 0 || rect.height == 0,
-                              "\(geometry) is a gap or an edge, so one axis has to start closed: \(rect)")
             case .positionCrossfade, .slideAndGrow:
                 XCTAssertTrue(rect.width > 0 && rect.height > 0,
                               "\(geometry) moves a whole box, not a closing gap: \(rect)")

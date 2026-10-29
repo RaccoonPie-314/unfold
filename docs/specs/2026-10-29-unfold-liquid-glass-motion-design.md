@@ -96,7 +96,7 @@ motion table and the morph math are testable in `Tests/UnfoldTests` without touc
 | Unit | One job | Depends on |
 |---|---|---|
 | `Sources/Unfold/Design/MotionPlan.swift` | The transition table as values: name, duration, curve, geometry kind. | Foundation |
-| `Sources/Unfold/Design/Motion.swift` | Translate one `MotionPlan` entry into Core Animation on layer-backed views. `Motion.morph(_:source:transition:completion:)` is the only code that touches a `CAAnimation`, and it retargets whatever is in flight instead of queueing one. There is deliberately **no** `Motion.stop` (Ruling E): removing the in-flight animation on the next target *is* the stop, and nothing else calls one until Plan 4's panel dismissal asks for it. The FLIP helper is **not** here -- it is the Foundation-only `MotionGeometry.swift` below, plus the source-pose helper (`revealEdge`) the production call site and `MotionProbe` share -- `insertionGap` and `collapseGap` left with the row transitions on 2026-10-29. | MotionPlan, MotionGeometry, QuartzCore, AppKit |
+| `Sources/Unfold/Design/Motion.swift` | Translate one `MotionPlan` entry into Core Animation on layer-backed views. `Motion.morph(_:source:transition:completion:)` is the only code that touches a `CAAnimation`, and it retargets whatever is in flight instead of queueing one. There is deliberately **no** `Motion.stop` (Ruling E): removing the in-flight animation on the next target *is* the stop, and nothing else calls one until Plan 4's panel dismissal asks for it. The FLIP helper is **not** here -- it is the Foundation-only `MotionGeometry.swift` below, plus the source-pose helper (`slideAndGrowSource`, the glass selection pill's travel) the production call site and `MotionProbe` share -- `insertionGap`, `collapseGap` and `revealEdge` all left with the row transitions and the Diagnostics content transform on 2026-10-29. | MotionPlan, MotionGeometry, QuartzCore, AppKit |
 | `Sources/Unfold/Design/MotionGeometry.swift` | Pure rect math: two rects → scale + centre displacement (`MorphTransform`), anchor-agnostic by design because `Motion` reads the real layer's anchor. Foundation only, so the morph math is assertable without a view. | Foundation |
 | `Sources/Unfold/Design/Theme.swift` | Corner radii, spacing scale, type scale, the appearance-preference enum and its persistence. | AppKit |
 | `Sources/Unfold/AppShell/Glass.swift` | `wrap(_:cornerRadius:padding:interactive:)` and `windowBackground()`. The `tint:` parameter is deleted: no call site uses it, and color on glass is a budget spent only on status symbols. **There is no container** -- the `NSGlassEffectContainerView` this section first specified was withdrawn during execution (Ruling V), and the file lives in `AppShell/` because both of its functions build views, not tokens. | `NSGlassEffectView` |
@@ -104,7 +104,7 @@ motion table and the morph math are testable in `Tests/UnfoldTests` without touc
 | `Sources/Unfold/AppShell/SidebarViewController.swift` | Source list, filter, selection landing (`SidebarRowDiff`), `ComboRowView`. The row insert/remove motion this row used to name was removed by user decision on 2026-10-29; the landing rule it shared with that animation stays. | Theme |
 | `Sources/Unfold/AppShell/EditorViewController.swift` | The editor form, the commit-as-you-type paths, the hint line. Moved from `MainWindowController` verbatim. | Theme |
 | `Sources/Unfold/AppShell/DiagnosticsViewController.swift` | The counters block, the glass test-button cluster, the test result line. | Theme, Glass |
-| `Sources/Unfold/AppShell/MainWindowController.swift` | Window, toolbar, split assembly, appearance toggle, cross-pane wiring, the combo model path, and the diagnostics actions the responder chain reaches. **Measured 740 lines at this writing**: the row previously claimed 798 at the tip of the AJ-fix pass (after Tasks 10-12 added the cross-pane orchestration and the fix wave took 12 lines back out), and the 2026-10-29 user-decision removal then took out the window-level selection overlay, its morph and the row-animation call sites -- what is left of the motion wiring is `paneReveal` on the diagnostics toggle and `statusMorph` on the pill. Ruling T's decision stands, and Ruling AJ2 upholds it while overturning only the number: splitting the toolbar delegate into a same-type extension file would move code without moving a responsibility, and is deliberately not done. | the four panes |
+| `Sources/Unfold/AppShell/MainWindowController.swift` | Window, toolbar, split assembly, appearance toggle, cross-pane wiring, the combo model path, and the diagnostics actions the responder chain reaches. **Measured 834 lines at this writing**: the 2026-10-29 four-item pass deleted the Diagnostics content transform (`paneReveal`) and the status-pill width spring (`statusMorph`), and rewired the divider -- the motion that lives here now is the glass selection pill (`selectionSlide`, item 1) and the one-clock Diagnostics divider `setDiagnosticsCollapsed(_:animated:)` (item 3); the status pill (item 2) is fixed-width and runs no motion. **Sidebar 218 pt finding (measured 2026-10-29):** `NSSplitViewController.view` is *not* the `NSSplitView` on this SDK -- it is a plain `NSView` containing it -- so the old `view as? NSSplitView` cast was silently nil and `restoreFrame`'s `setPosition(218, ofDividerAt: 0)` never took effect; the sidebar had been opening at its 190 pt minimum, contradicting the "opens at 218" claim below. Divider moves now route through a `splitViewView` lookup, and `restoreFrame` applies the 218 pt position **after** `setFrameAutosaveName` (which re-lays-out and was clobbering it); `DiagnosticsDividerTests` asserts the sidebar wrapper lands at 218. Ruling T's decision stands, and Ruling AJ2 upholds it while overturning only the number: splitting the toolbar delegate into a same-type extension file would move code without moving a responsibility, and is deliberately not done. | the four panes |
 | `Sources/Unfold/AppShell/PromptPanelController.swift` | The `NSPanel` that collects placeholder values and hands them back. | `Prompt`, Motion, Theme |
 | `Sources/UnfoldEngine/Prompt.swift` | Pure: `Combo.parts` → ordered `PromptField`s; submitted values → composed `[Part]`; refusal rules. In the engine, not `UnfoldMac`, because composing a replacement is the engine's job and this way `UnfoldCTL` and `Tests/UnfoldEngineTests` reach it without a GUI target. | Foundation, `Template` |
 
@@ -221,21 +221,48 @@ Two pairs a unit test cannot decide, so they are measured on pixels instead:
 (`.spring(damping:)` -- **one** knob, because the transition's `duration` *is* the settle time and the
 stiffness is derived to fit it (Ruling AC #1) -- or `.easeOut` with four unlabeled `Double` control
 points) and a `Geometry`
-(`growFromEdge`, `positionCrossfade`, `symbolMorph`). There is no `Kind`
+(`slideAndGrow`, `positionCrossfade`). There is no `Kind`
 enum and no `Motion.run(_:)`: `Motion.morph(_:source:transition:completion:)` is the only code that touches
 Core Animation, and the FLIP helper is a separate Foundation-only unit -- `MotionGeometry.morph(source:final:)`
 turns two rects into a `MorphTransform` of scale plus centre displacement, and `Motion` adds the layer's own
 anchor term before installing it. The one source pose a call site *derives* (rather than measures off another
-view) is `MotionGeometry`'s too -- `revealEdge` -- so the production pane and `MotionProbe` cannot drift.
-(`positionCrossfade` has no wired production user today: it belongs to the Plan 4 prompt pair, and the
-`MainWindowController.toggleDiagnostics` call site is what reads `growFromEdge`.)
+view) is `MotionGeometry`'s too -- `slideAndGrowSource`, the glass selection pill's travel -- so the production
+pane and `MotionProbe` cannot drift. (`positionCrossfade` has no wired production user today: it belongs to
+the Plan 4 prompt pair. The Diagnostics reveal is **not** a `Transition` at all -- see below -- because it is
+one AppKit divider move on the split view's own clock, not a shell-authored morph; the `growFromEdge` geometry
+and its `revealEdge` source pose left with the content transform the user rejected on 2026-10-29.)
+
+### The Diagnostics divider (one clock, no content transform)
+
+The user's 2026-10-29 complaint -- *"the diagnose panel, when it expand there is just a line there and the
+animation is awkward. When the text shrink when the diagnose panel expand out it shrink instantly awkwardly
+too."* -- came from a content transform riding beside the system's own divider move (the "line") plus a snap
+(the instant re-truncation). The transform is deleted. What remains is `MainWindowController.setDiagnosticsCollapsed(_:animated:)`:
+the `NSSplitViewItem` collapse (AppKit drives it "purely from a constraint animation", `NSSplitViewItem.h:32`)
+wrapped with `NSSplitView.setPosition(_:ofDividerAtIndex:)`, both inside one `NSAnimationContext` carrying
+`MotionPlan.dividerDuration` (280 ms) and the approved easeOut curve (`dividerCurve`) with implicit animation
+on -- so the divider, the arriving pane and the middle pane's re-truncating text share a single AppKit layout
+pass. These two numbers are deliberately **not** a `Transition`: a `Transition` would claim a `MotionGeometry`
+pose this motion does not have. **Measured harness limit:** the eased glide is driven by Core Animation's
+display-link commit cycle, which the command-line `swift test` run loop does not pump, so `DiagnosticsDividerTests`
+asserts the collapse *target* geometry (the pane lands at its `minimumThickness`, which equals the designed
+`diagnosticsExpandedWidth`) and the flip of the collapse flag, and the smoothness of the travel is a live-pass
+observation.
 
 | id | Trigger | Geometry | Duration | Curve |
 |---|---|---|---|---|
-| `paneReveal` | stethoscope → Diagnostics | the pane's content grows from the divider edge; the divider itself moves through `NSSplitViewController`'s own animation | 280ms | spring |
-| `statusMorph` | tap state change | SF Symbol replacement plus the **wrapped toolbar item view** -- `MainWindowController.statusPill`, the `NSGlassEffectView` AppKit's toolbar sizes -- springing its width to fit the new label, so material and content travel as one object (Ruling AJ7; it used to morph the content stack inside that view, which snapped the box under a springing content) | 240ms | easeOut |
+| `selectionSlide` | sidebar row selection | the glass selection pill slides from its previous row to the new one and grows the last ~10% into it (`slideAndGrow`) | 240ms | spring (damping 0.85) |
 | `promptPresent` | a placeholder combo fires | the panel scales out of the caret's screen rect | 220ms | spring (declared only -- wired in Plan 4) |
 | `promptDismiss` | confirm or cancel | reverse into the caret rect | 180ms | easeOut (declared only -- wired in Plan 4) |
+| -- (not a `Transition`) | stethoscope → Diagnostics | one AppKit divider move -- `NSSplitView.setPosition` + the item's constraint collapse, inside one `NSAnimationContext`; no shell content transform | 280ms | easeOut (`MotionPlan.dividerCurve`) |
+
+**Why `paneReveal` and `statusMorph` are gone (user decisions, 2026-10-29).** `paneReveal` was the pane's
+content transform -- the "line" the user rejected -- and it is deleted, not dormant: the Diagnostics reveal is
+now the one-clock divider move above. `statusMorph` sprang the status pill's width to fit the new label; the
+user then asked for *"a fixed size without changing when toggling it,"* so the pill's label width is reserved
+to one value across all seven `MenuStatus` states and the width transition that could move it is gone (the
+symbol swap stays static -- the seven glyphs all render 15 pt wide). The transition id, its `Transition` entry,
+the source-pose helper and every test that pinned them are deleted.
 
 **Why `rowInsert`, `rowRemove` and `selectionMorph` are gone (user decision, 2026-10-29).** They shipped,
 and the user's live verdict was "what with the white stuff coming from left side every time i select other
@@ -245,7 +272,8 @@ row poses were the flash: `setRows` calls `reloadData()`, so every row is alread
 when a transform pose installs -- the arriving row scaled while its neighbours jumped, which reads as a
 blink, not motion. All three ids, the overlay view, the window wiring, the source-pose helpers
 `insertionGap`/`collapseGap`, and the tests that pinned them are deleted, not dormant. What survived is
-what the user did not object to -- `paneReveal` and `statusMorph`, wired -- plus the Plan 4 declarations.
+the glass selection pill (`selectionSlide`, a whole box that slides and grows -- not the rejected travelling
+line), the Diagnostics divider (one AppKit clock), and the Plan 4 declarations.
 
 **The open decision, restated for whatever list motion comes next.** A transform on a
 `reloadData()`-final layout is not real list motion; the earlier version of this section described the
@@ -405,8 +433,8 @@ PID, because both the tap and the materials are the parts a unit test cannot rea
    is run from **its own source pose**, chosen by the `Geometry` the plan declares for it and taken from the
    same `MotionGeometry` helper the production call site uses (Ruling AJ4); the probe used to hand every
    wired transition the
-   same zero-height gap, which made `paneReveal`'s and `statusMorph`'s numbers describe a grow neither of them
-   performs. Chosen
+   same zero-height gap, which made the then-wired transitions' numbers describe a grow they did not perform.
+   Chosen
    over a window-capturing shell script because it samples the animation's own intermediate state rather
    than a screenshot that may land between frames, and because it does not have to raise a window to read
    one. `promptPresent` and `promptDismiss` are excluded until Plan 4 builds the panel they morph from.

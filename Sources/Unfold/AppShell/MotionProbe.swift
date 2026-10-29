@@ -4,13 +4,14 @@ import AppKit
 /// animation is real" has to be a number at three timestamps rather than a screenshot opinion.
 @MainActor
 enum MotionProbe {
-    /// The transitions the probe runs: every id the shell actually wires. `promptPresent` and
-    /// `promptDismiss` are Plan 4's -- the panel they need does not exist yet -- and the selection-line
-    /// and row-flash transitions were removed by user decision on 2026-10-29, so this is the wired set
-    /// and `MotionProbeTests` asserts it.
-    static let wiredTransitionIDs: [TransitionID] = [.selectionSlide, .paneReveal]
+    /// The transitions the probe runs: every id the shell actually wires **through `Motion.morph`**.
+    /// `promptPresent` and `promptDismiss` are Plan 4's -- the panel they need does not exist yet -- the
+    /// selection-line and row-flash transitions were removed by user decision on 2026-10-29, and the
+    /// diagnostics reveal is a divider move on AppKit's own clock, not a morph. The sidebar selection
+    /// pill is the one geometric production morph today, which is what `MotionProbeTests` asserts.
+    static let wiredTransitionIDs: [TransitionID] = [.selectionSlide]
 
-    /// Runs the two wired transitions against `host`, staggered past the previous one's duration plus a
+    /// Runs the wired transitions against `host`, staggered past the previous one's duration plus a
     /// settle gap. `Motion.morph` deliberately removes the in-flight animation when a new target arrives, so
     /// firing both at once would leave the later samples measuring the wrong transition.
     static func runAll(on host: NSView, log: @escaping (String) -> Void) {
@@ -28,8 +29,6 @@ enum MotionProbe {
     /// the log describe the probe's invention instead of the plan, and the switch being exhaustive over
     /// `Geometry` is what keeps that a compile-time property rather than a copy-paste.
     ///
-    /// - `.growFromEdge` (`paneReveal`) reuses the very helper the production call site calls --
-    ///   `MotionGeometry.revealEdge` -- so a probe and a pane cannot drift apart.
     /// - `.slideAndGrow` (`selectionSlide`) -- the selection pill's travel: production's source is the
     ///   pill's previous row rect shrunk about its centre (`MotionGeometry.slideAndGrowSource`), so the
     ///   probe synthesizes the same shape from a "previous row" one row-width to the left of the host.
@@ -40,7 +39,6 @@ enum MotionProbe {
     ///   the switch exhaustive and gives Plan 4 the probe for free.
     static func sourceRect(for transition: Transition, final: CGRect) -> CGRect {
         switch transition.geometry {
-        case .growFromEdge:      return MotionGeometry.revealEdge(for: final)
         case .slideAndGrow:      return MotionGeometry.slideAndGrowSource(
                                         previous: final.offsetBy(dx: -final.width, dy: 0))
         case .positionCrossfade: return final.offsetBy(dx: -final.width, dy: 0)
@@ -53,11 +51,10 @@ enum MotionProbe {
     ///
     /// What "moving" means in the log: a transform animation does *not* change `bounds` -- the resting
     /// size stays the resting size, which is the point of morphing by transform. The evidence that the
-    /// motion is geometric is `scale` (0.02 → 1 for the pane's zero-width grow after its clamp, 0.9 → 1
-    /// for the selection pill's grow-in as it slides, 1.000 × 1.000 with a sliding `tx` for a
-    /// crossfade) and `tx`/`ty` sliding to zero. `bounds` is logged alongside them precisely so a
-    /// mistake that *did* resize the layer would show up here rather than being mistaken for the
-    /// transform.
+    /// motion is geometric is `scale` (0.9 → 1 for the selection pill's grow-in as it slides, and
+    /// 1.000 × 1.000 with a sliding `tx` for a crossfade) and `tx`/`ty` sliding to zero. `bounds` is
+    /// logged alongside them precisely so a mistake that *did* resize the layer would show up here
+    /// rather than being mistaken for the transform.
     private static func run(_ transition: Transition, on host: NSView, log: @escaping (String) -> Void) {
         let final = host.frame
         let source = sourceRect(for: transition, final: final)

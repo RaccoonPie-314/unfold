@@ -114,10 +114,10 @@ deprecated `selectionHighlightStyle = .sourceList` assignment, and every macOS 2
 | 5 | Extract `DiagnosticsViewController`, thin the controller | three panes out; the controller stops owning pane internals (it lands at 568, not ~200 -- see Ruling T/AJ2) |
 | 6 | ~~One glass container~~ Interactive glass on the existing wraps -- **the container was withdrawn by Ruling V** | press response visible; one `Glass.wrap` per cluster, no merged slab |
 | 7 | `Contrast.swift` + `ContrastTests` + the color moves | Light mode meets the floor, asserted |
-| 8 | `MotionPlan.swift` + `MotionPlanTests` | the seven transitions exist as data |
+| 8 | `MotionPlan.swift` + `MotionPlanTests` | three `Transition`s exist as data (`selectionSlide`, `promptPresent`, `promptDismiss`) plus the Diagnostics divider's `dividerDuration`/`dividerCurve` pair -- the row originally read "seven transitions"; the four-item 2026-10-29 pass deleted `rowInsert`, `rowRemove`, `selectionMorph`, `paneReveal` and `statusMorph` by user decision |
 | 9 | `MotionGeometry.swift` + `MotionGeometryTests` | morph math proven for both coordinate spaces |
 | 10 | `Motion.swift` + `MotionProbe` + probe button | one transition measured to move geometrically |
-| 11 | ~~Wire `rowInsert`, `rowRemove`, `selectionMorph`, `paneReveal`, `statusMorph`; neighbour selection~~ -- cut to `paneReveal` + `statusMorph` by user decision, 2026-10-29; neighbour selection stands | `paneReveal` and `statusMorph` measured; delete lands on the neighbour instead of row 0 |
+| 11 | ~~Wire `rowInsert`, `rowRemove`, `selectionMorph`, `paneReveal`, `statusMorph`; neighbour selection~~ -- the 2026-10-29 four-item pass left only the glass selection pill (`selectionSlide`, item 1); `statusMorph` (item 2) and `paneReveal` (item 3) are deleted -- the Diagnostics reveal is one AppKit divider move (`setDiagnosticsCollapsed`, item 3), not a morph; neighbour selection stands | selection pill + one-clock divider measured; delete lands on the neighbour instead of row 0 |
 | 12 | Appearance toolbar item, shared status vocabulary, two-appearance capture | toggle works, menu and pill agree |
 
 ---
@@ -691,6 +691,12 @@ cd "$REPO_ROOT" && ./Scripts/make-app-bundle.sh && ./Scripts/install-local.sh
 Verify by eye: rows show trigger over preview, selection tints the row and the symbol follows it, the
 filter narrows the list, `+` lands a selected focused row, deleting selects a row, and the sidebar width
 still opens at 218 pt.
+> **Corrected 2026-10-29 (measured):** that "opens at 218 pt" never held. `NSSplitViewController.view` is
+> *not* the `NSSplitView` on this SDK -- it is a plain `NSView` containing it -- so the `view as? NSSplitView`
+> cast in `restoreFrame` was silently nil and `setPosition(218, ofDividerAt: 0)` was a no-op: the sidebar had
+> been opening at its 190 pt minimum this whole time. Divider moves now route through a `splitViewView`
+> lookup, and `restoreFrame` applies the 218 pt position **after** `setFrameAutosaveName` (which re-laid-out
+> and clobbered an earlier `setPosition`); `DiagnosticsDividerTests` asserts the sidebar wrapper lands at 218.
 
 - [ ] **Step 5: Stop for review**
 

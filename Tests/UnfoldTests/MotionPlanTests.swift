@@ -21,8 +21,7 @@ private func progress(of curve: (Double, Double, Double, Double), atTime time: D
 /// The motion contract as data. Every rule corrected in review is an assertion here, so a
 /// regression is a failing test rather than "i cant tell if anything animated".
 final class MotionPlanTests: XCTestCase {
-    private let required: [TransitionID] = [.selectionSlide, .paneReveal,
-                                            .promptPresent, .promptDismiss]
+    private let required: [TransitionID] = [.selectionSlide, .promptPresent, .promptDismiss]
 
     func testEveryNamedTransitionExists() {
         for id in required { XCTAssertNotNil(MotionPlan.lookup(id), "\(id) is missing") }
@@ -34,7 +33,6 @@ final class MotionPlanTests: XCTestCase {
     func testEachTransitionIsExactlyAsSpecified() {
         let expected: [TransitionID: (duration: Double, curve: Curve, ramp: Double)] = [
             .selectionSlide: (0.24, .spring(damping: 0.85), 0.2),
-            .paneReveal: (0.28, .spring(damping: 0.85), 0.2),
             .promptPresent: (0.22, .spring(damping: 0.85), 0.2),
             .promptDismiss: (0.18, .easeOut(0.33, 1, 0.68, 1), 0.2),
         ]
@@ -118,10 +116,10 @@ final class MotionPlanTests: XCTestCase {
     /// still has value if anyone adds a `default:`. The name check is `==` rather than `contains`, because
     /// `.positionCrossfade` ends in the substring "fade" and a membership set is what actually refuses it.
     func testEveryTransitionMovesGeometry() {
-        let allowed: Set<String> = ["growFromEdge", "positionCrossfade", "slideAndGrow"]
+        let allowed: Set<String> = ["positionCrossfade", "slideAndGrow"]
         for t in MotionPlan.all {
             switch t.geometry {
-            case .growFromEdge, .positionCrossfade, .slideAndGrow:
+            case .positionCrossfade, .slideAndGrow:
                 break
             }
             XCTAssertFalse(String(describing: t.geometry) == "fade", "\(t.id)")
@@ -150,5 +148,21 @@ final class MotionPlanTests: XCTestCase {
             }
         }
         XCTAssertGreaterThan(springs, 0, "no spring left for this test to constrain")
+    }
+
+    /// The Diagnostics divider's clock is data too (the 2026-10-29 four-change pass deleted the pane
+    /// content transform and kept the divider move), so it lives in the plan and is bound by the same
+    /// rules: the perceived band, and **no spring** -- `NSAnimationContext` expresses control points,
+    /// not a damped settle, and pretending otherwise would be a plan value the divider path cannot
+    /// honour.
+    func testTheDividerClockIsInTheBandAndExpressibleOnNSAnimationContext() {
+        XCTAssertGreaterThanOrEqual(MotionPlan.dividerDuration, 0.15, "the divider move is too fast to perceive")
+        XCTAssertLessThanOrEqual(MotionPlan.dividerDuration, 0.32, "the divider move makes people wait")
+        guard case .easeOut(let x1, let y1, let x2, let y2) = MotionPlan.dividerCurve else {
+            return XCTFail("the divider cannot spring; NSAnimationContext takes control points, "
+                            + "and only the approved ease-out shape may be written here")
+        }
+        XCTAssertEqual([x1, y1, x2, y2], [0.33, 1.0, 0.68, 1.0],
+                       "the divider moved off the approved curve")
     }
 }

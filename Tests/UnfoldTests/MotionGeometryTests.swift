@@ -44,9 +44,9 @@ final class MotionGeometryTests: XCTestCase {
     }
 
     /// Every other case in this file shares x and width between source and target, so the horizontal axis
-    /// reads as identity no matter what the implementation does. `paneReveal` and `statusMorph` are
-    /// horizontal transitions, so an implementation that hard-coded `scale.width = 1` and
-    /// `translation.width = 0` would ship a pane that grows out of the wrong edge.
+    /// reads as identity no matter what the implementation does. The selection pill's slide is a
+    /// horizontal transition, so an implementation that hard-coded `scale.width = 1` and
+    /// `translation.width = 0` would ship a pill that springs in place instead of travelling to its row.
     func testHorizontalAxisIsNotAssumedIdentity() {
         let wide = CGRect(x: 100, y: 200, width: 300, height: 40)
         let narrowLeft = CGRect(x: 60, y: 200, width: 150, height: 40)

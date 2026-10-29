@@ -53,16 +53,11 @@ enum MotionGeometry {
     // MARK: - source poses
     //
     // The rects a call site *derives* from a final frame, as opposed to measures off another view. They live
-    // here, next to the math that reads them, because the production call site
-    // (`MainWindowController.toggleDiagnostics`) and `MotionProbe` need the same one: the probe exists to
-    // log the geometry a transition actually performs, so a probe holding its own copy of the rect is
-    // measuring its own invention instead of the plan (Ruling AJ4).
-
-    /// A revealed pane's leading edge: zero width, full height, on the divider side, so the content unfolds
-    /// away from the divider rather than out of a generic baseline.
-    static func revealEdge(for final: CGRect) -> CGRect {
-        CGRect(x: final.minX, y: final.minY, width: 0, height: final.height)
-    }
+    // here, next to the math that reads them, because the production call site (`SidebarViewController`'s
+    // selection pill) and `MotionProbe` need the same one: the probe exists to log the geometry a transition
+    // actually performs, so a probe holding its own copy of the rect is measuring its own invention instead
+    // of the plan (Ruling AJ4). The pane's divider-edge pose left with the content transform the user
+    // rejected on 2026-10-29 -- the diagnostics reveal is one divider move now, not a morph.
 
     /// How much of its own size a sliding selection pill wears at the start of its travel: the previous
     /// rect inset about its centre by this ratio, so the pill lands having **grown** the last ~10% into

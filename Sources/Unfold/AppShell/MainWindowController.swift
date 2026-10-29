@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 import UnfoldEngine
 import UnfoldMac
 
@@ -37,9 +38,23 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     /// The pill surface the toolbar sizes. Internal rather than private because
     /// `StatusPillWidthTests` measures its fitting size across all seven `MenuStatus` states -- the
     /// property the user asked for on 2026-10-29 is that this view's width never changes -- and nothing
-    /// outside this file drives it. It used to be the surface `statusMorph` sprang its width on; that
+    /// outside this file drives it. It used to be the surface the pill-width transition sprang its width on; that
     /// transition is gone because the width it animated must now never exist as a change.
     var statusPill: NSView?
+    /// The Diagnostics pane's on-screen width: the split view item's **wrapper**, not the pane's own
+    /// view -- measured, a collapsed wrapper is 0 wide while the inner view keeps its last laid-out
+    /// frame, so `view.frame.width` would report an open pane that is clipped away. Internal for
+    /// `DiagnosticsDividerTests`, which measures where the divider actually stopped; nothing outside
+    /// this file reads it.
+    var diagnosticsPaneWidth: CGFloat {
+        diagnostics.view.superview?.frame.width ?? diagnostics.view.frame.width
+    }
+    /// The collapse state the toggle leaves behind -- same test seam, same reason.
+    var diagnosticsPaneCollapsed: Bool { diagnosticsItem?.isCollapsed ?? true }
+    /// The window's real `NSSplitView`, resolved through the same `splitViewView` lookup production
+    /// uses. Internal for `DiagnosticsDividerTests`, which asserts the sidebar's 218 pt divider position
+    /// landed -- the exact fact the old nil `view as? NSSplitView` cast silently skipped.
+    var splitViewForProbe: NSSplitView? { splitViewView }
     private var statusItem: NSToolbarItem?
     /// The appearance control, kept so choosing a preference can rewrite *its* tooltip without hunting
     /// the toolbar for it. Reassigned whenever the toolbar rebuilds the item, same as `statusItem`.
@@ -178,13 +193,52 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
 
     /// Setting `contentViewController` resizes the window to the split view's fitting size -- the sum
     /// of the pane minimums, which is the smallest legal window, not the designed one. So the design
-    /// size and the saved frame are applied afterwards, in that order.
+    /// size and the saved frame are applied first, and the sidebar's divider position is applied
+    /// **last**: `setFrameAutosaveName` re-runs the split view's layout when it restores a saved frame
+    /// (measured -- the sidebar fell back to its 190 pt minimum), so a `setPosition` issued before it is
+    /// clobbered. Placing it after the frame settles makes the 218 pt intent the final word.
     private func restoreFrame(_ window: NSWindow) {
         window.setContentSize(NSSize(width: 900, height: 580))
-        (splitView.view as? NSSplitView)?.setPosition(218, ofDividerAt: 0)
         if !window.setFrameAutosaveName("UnfoldMainWindow") {
             window.center()
         }
+        // 218 pt for the sidebar -- and this is now the **second** reason the `splitViewView` lookup
+        // exists: the old `splitView.view as? NSSplitView` was nil on this SDK (measured), so the
+        // sidebar has been opening at its 190 pt minimum ever since, which live-pass item 2 was
+        // supposed to catch. The lookup makes the intent real.
+        splitViewView?.setPosition(218, ofDividerAt: 0)
+    }
+
+    /// The divider index of the Diagnostics pane: sidebar, editor, diagnostics makes it item 2 and
+    /// therefore divider 1 (dividers are indexed between items).
+    private static let diagnosticsDividerIndex = 1
+    /// The pane width `toggleDiagnostics` opens to. It is deliberately the same number as the
+    /// item's `minimumThickness`: the target sits exactly where AppKit's clamp will let it sit, so
+    /// the divider travels to the pane's designed width instead of overshooting into a clamp.
+    static let diagnosticsExpandedWidth: CGFloat = 230
+
+    /// The window's actual `NSSplitView`.
+    ///
+    /// **Measured, because the assumption was wrong:** `NSSplitViewController.view` is *not* the split
+    /// view on this SDK -- it is a plain `NSView` that contains the `NSSplitView` as a subview (printed
+    /// in `DiagnosticsDividerTests`' environment while writing it). Every `view as? NSSplitView` cast
+    /// therefore silently returns nil, which is how the pre-existing sidebar `setPosition(218, ...)` in
+    /// `restoreFrame` opened at the 190 pt minimum instead -- the old cast was a no-op the whole time.
+    /// Everything divider-shaped goes through this lookup.
+    private var splitViewView: NSSplitView? {
+        if let direct = splitView.view as? NSSplitView { return direct }
+        return splitView.view.subviews.first { $0 is NSSplitView } as? NSSplitView
+    }
+
+    /// The plan's divider curve, expressed as the one thing `NSAnimationContext` can be handed: four
+    /// control points. A spring is not available to AppKit's divider animation, which is why
+    /// `MotionPlan.dividerCurve` is the approved ease-out and `MotionPlanTests` refuses anything else
+    /// for it; the fallback keeps the switch honest, not reachable.
+    private static var dividerTiming: CAMediaTimingFunction {
+        if case .easeOut(let x1, let y1, let x2, let y2) = MotionPlan.dividerCurve {
+            return CAMediaTimingFunction(controlPoints: Float(x1), Float(y1), Float(x2), Float(y2))
+        }
+        return CAMediaTimingFunction(name: .easeOut)
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -212,6 +266,17 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         splitView.addSplitViewItem(detail)
 
         diagnostics.title = "Diagnostics"
+        // The item keeps AppKit's own collapse mechanics -- measured necessity: `setPosition` behaves
+        // as a drag (`NSSplitView.h:83`), and a drag is *allowed to collapse* an adjacent item but is
+        // clamped against the pane's content fitting size (~146 pt here, 16 pt inset + the buttons'
+        // intrinsic width) when the item cannot collapse, so a plain item could never fully close --
+        // that dead end is what the earlier `minimumThickness = 0` experiment hit. What changed on
+        // 2026-10-29 is not *who* collapses the pane but *what rides the clock*:
+        // `toggleDiagnostics` puts every divider move inside one `NSAnimationContext` (the plan's
+        // divider duration and the approved curve, implicit animation on), so the divider, the
+        // arriving pane and the middle pane's re-truncating text share a single pass, and the pane's
+        // content is no longer separately transformed -- that transform was the "line", and it is
+        // deleted, not dormant.
         diagnosticsItem = NSSplitViewItem(viewController: diagnostics)
         diagnosticsItem.minimumThickness = 230
         diagnosticsItem.canCollapse = true
@@ -287,7 +352,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     ///
     /// The label's width is **reserved** to `statusLabelReservedWidth` before the stack is wrapped, so
     /// the glass box the toolbar sizes is the same for all seven states and no width motion can exist
-    /// (the user asked for a fixed pill on 2026-10-29; `statusMorph`, which sprang a width change, is
+    /// (the user asked for a fixed pill on 2026-10-29; the transition that sprang a width change is
     /// deleted at the same time as this reservation is added).
     private func buildStatusItem(_ identifier: NSToolbarItem.Identifier) -> NSToolbarItem {
         let symbol = NSImageView()
@@ -614,24 +679,71 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         refreshStatus()
     }
 
+    /// Opens or closes the Diagnostics pane by **moving the divider on one clock** -- the single motion
+    /// the user asked for on 2026-10-29 ("when it expand there is just a line there and the animation
+    /// is awkward. When the text shrink ... it shrink instantly awkwardly too"). The content transform
+    /// that used to ride beside the divider (the "line") is deleted, so `NSSplitView`'s own divider
+    /// move is the only motion, and the middle pane's re-truncating text re-lays-out on the same pass.
+    ///
+    /// The move is `setDiagnosticsCollapsed(_:animated: true)`: a collapsible `NSSplitViewItem`
+    /// collapses *purely from a constraint animation* at its `holdingPriority` (`NSSplitViewItem.h:32`),
+    /// so the collapse is lifted/lowered around `setPosition(_:ofDividerAtIndex:)` -- the only divider-
+    /// positioning API on this SDK (`NSSplitView.h:81`, 10.5+; there is no animated variant) -- and both
+    /// run inside one `NSAnimationContext` (the plan's divider duration and the approved curve, implicit
+    /// animation on). Lifting the collapse is what lets the position travel open (measured: a
+    /// `setPosition` against a still-collapsible pane flips the flag but leaves the divider parked at
+    /// the trailing edge); driving the position to `bounds.maxX − diagnosticsExpandedWidth` is what
+    /// lands the pane on the designed 230 pt instead of whatever thickness the item last remembered.
     @objc func toggleDiagnostics(_ sender: Any?) {
-        guard let diagnosticsItem else { return }
-        let wasCollapsed = diagnosticsItem.isCollapsed
-        diagnosticsItem.isCollapsed.toggle()
-        // Only the *reveal* has content to grow; closing the pane hides content, and `Motion.morph` always
-        // lands on `view.frame`, so there is nothing to animate toward.
-        guard wasCollapsed, let reveal = MotionPlan.lookup(.paneReveal), window?.isVisible == true else { return }
-        let content = diagnostics.view
-        // The divider keeps `NSSplitViewController`'s own animation; what morphs is the pane's *content*.
-        // Flushing the tile first is not decoration: `content.frame` has to be the rect the divider is
-        // travelling to, or the grow pose lands on the collapsed width and animates nothing.
-        splitView.view.layoutSubtreeIfNeeded()
-        let final = content.frame
-        guard final.width > 0, final.height > 0 else { return }
-        // `growFromEdge`: a zero-width rect on the pane's own leading edge -- the divider side, since this
-        // is the rightmost item -- so the content unfolds away from the divider rather than from a generic
-        // baseline the way a row does.
-        Motion.morph(content, source: MotionGeometry.revealEdge(for: final), transition: reveal)
+        setDiagnosticsCollapsed(!(diagnosticsItem?.isCollapsed ?? true), animated: true)
+    }
+
+    /// The one implementation of the Diagnostics divider move, shared by `toggleDiagnostics` and the
+    /// test seam so the geometry target is never a constant the production path does not use.
+    ///
+    /// `animated == true` is the one-clock `NSAnimationContext` pass the user sees. `animated == false`
+    /// performs the identical collapse and divider move synchronously -- the same state mutation, only
+    /// without the easing.
+    ///
+    /// **Measured harness limit** (why the seam exists): the constraint glide is driven by Core
+    /// Animation's display-link commit cycle, which the command-line `swift test` run loop does not
+    /// pump. An animated `setDiagnosticsCollapsed` therefore flips `isCollapsed` immediately but leaves
+    /// the divider at its start pose until the first real on-screen frame -- reproduced with the window
+    /// both off-screen and on the built-in display. So `DiagnosticsDividerTests` measures the *target*
+    /// geometry through `animated: false` (the pane lands at its `minimumThickness`, which `assembleSplitView`
+    /// sets equal to `diagnosticsExpandedWidth`), and the smoothness of the eased travel -- and, in a
+    /// fixture where the uncollapse alone reaches that width, *which* divider the position names -- are
+    /// live-pass observations, not something the harness can see.
+    func setDiagnosticsCollapsed(_ collapsed: Bool, animated: Bool) {
+        guard let split = splitViewView, let diagnosticsItem else { return }
+        split.layoutSubtreeIfNeeded()
+        let open = !collapsed
+        let target = open ? split.bounds.maxX - Self.diagnosticsExpandedWidth : split.bounds.maxX
+        let move: () -> Void = {
+            // Lift the collapse before the position can travel open; lower it after the position
+            // reaches the trailing edge when closing (a drag to the edge auto-collapses the item).
+            if open { diagnosticsItem.isCollapsed = false }
+            split.setPosition(target, ofDividerAt: Self.diagnosticsDividerIndex)
+            if !open { diagnosticsItem.isCollapsed = true }
+        }
+        if animated {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = MotionPlan.dividerDuration
+                context.timingFunction = Self.dividerTiming
+                context.allowsImplicitAnimation = true
+                move()
+            }
+        } else {
+            move()
+            split.layoutSubtreeIfNeeded()
+        }
+    }
+
+    /// Test seam: resolve the Diagnostics divider move synchronously so the harness can measure where
+    /// the divider lands without a display link to finish the animation. Production calls
+    /// `toggleDiagnostics` (animated); nothing outside `DiagnosticsDividerTests` reaches this.
+    func setDiagnosticsCollapsedForProbe(_ collapsed: Bool) {
+        setDiagnosticsCollapsed(collapsed, animated: false)
     }
 
     @objc func revealCombos(_ sender: Any?) {
