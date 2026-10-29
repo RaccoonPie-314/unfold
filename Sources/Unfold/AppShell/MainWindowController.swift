@@ -493,7 +493,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         NSWorkspace.shared.activateFileViewerSelecting([store.url])
     }
 
-    // The eight diagnostics actions below (`revealApp`, `restartTap`, `relaunch` and the five under
+    // The nine diagnostics actions below (`revealApp`, `restartTap`, `relaunch` and the six under
     // "Diagnostics actions") are internal rather than private: `DiagnosticsViewController`'s buttons
     // reference them with `#selector(MainWindowController.runSelfTest)`-style selectors and are sent
     // with a nil target, so the pane needs them visible at compile time and the responder chain needs
@@ -564,5 +564,14 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         consistencyTest.start(stressRounds: 40) { [weak self] summary in
             self?.diagnostics.testResult = summary
         }
+    }
+
+    /// Measures the motion rather than admiring it: runs every planned transition on the real
+    /// diagnostics button cluster and logs the presentation geometry through `launchLog`, so the live
+    /// pass greps numbers out of `/tmp/unfold-launch.log` instead of asking whether something "felt"
+    /// animated. The probe host is the cluster itself -- `diagnostics.loadViewIfNeeded()` ran in `init`,
+    /// so the view exists whether or not the pane is currently expanded.
+    @objc func runMotionProbe(_ sender: Any?) {
+        MotionProbe.runAll(on: diagnostics.containerForMotionProbe) { line in launchLog("motion: \(line)") }
     }
 }

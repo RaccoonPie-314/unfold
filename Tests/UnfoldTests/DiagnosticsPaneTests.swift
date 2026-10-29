@@ -20,13 +20,30 @@ final class DiagnosticsPaneTests: XCTestCase {
 
         let cluster = pane.containerForMotionProbe
         XCTAssertTrue(cluster is NSStackView,
-                      "the button cluster is the stack Task 6 puts in a glass container and Task 10 "
-                          + "measures; a different view type means the probe is looking at something else")
+                      "the probe host is the diagnostics button stack itself, the one Task 10 measures; "
+                          + "a different view type means the probe is looking at something else")
         let buttons = (cluster as? NSStackView)?.arrangedSubviews.compactMap { $0 as? NSButton } ?? []
-        XCTAssertEqual(buttons.count, 8,
-                       "the probe container must be the real button cluster, not a stand-in")
         XCTAssertTrue(cluster.isDescendant(of: pane.view),
                       "Task 10 measures this view's geometry; a view outside the pane's hierarchy has none")
+
+        // The full expected button list, by selector, in order. This replaces a bare count assertion:
+        // adding a button should be a deliberate edit here (the row plus its action), not a number that
+        // silently drifts. The order is the on-screen order, so a reorder that moves a destructive
+        // action next to a routine one also fails.
+        let expected: [Selector?] = [
+            #selector(MainWindowController.runConsistencyTest),
+            #selector(MainWindowController.runStressTest),
+            #selector(MainWindowController.runSelfTest),
+            #selector(MainWindowController.testIdleTimeout),
+            #selector(MainWindowController.testControlC),
+            #selector(MainWindowController.runMotionProbe),
+            #selector(MainWindowController.restartTap),
+            #selector(MainWindowController.relaunch),
+            #selector(MainWindowController.revealApp),
+        ]
+        XCTAssertEqual(buttons.map(\.action), expected,
+                       "the diagnostics cluster is not the expected button list, in order — a button "
+                           + "was added, dropped, retargeted, or reordered without updating its reviewer")
 
         for button in buttons {
             XCTAssertNil(button.target,

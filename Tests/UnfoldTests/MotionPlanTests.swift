@@ -77,7 +77,7 @@ final class MotionPlanTests: XCTestCase {
     /// are what set how much of the change is spent early. All four are also required to lie in [0, 1] at
     /// runtime by `CAMediaTimingFunction`, so an out-of-range value is a crash waiting for Task 10. The
     /// [0, 1] bound is also what makes the x curve monotonic, and therefore what makes the bisection in
-    /// `testNoCurveSpendsMostOfItsChangeInFortyFiveMilliseconds` legal.
+    /// `testNoCurveSpendsMostOfItsChangeEarlyInTheTimeline` legal.
     func testEaseOutControlPointsStayInsideTheUnitSquare() {
         for t in MotionPlan.all {
             guard case .easeOut(let x1, let y1, let x2, let y2) = t.curve else { continue }
@@ -88,27 +88,30 @@ final class MotionPlanTests: XCTestCase {
         }
     }
 
-    /// "It looked like nothing" is a statement about how much of the change is spent early, so this samples
-    /// the property itself: at an absolute 45 ms into a transition, no more than 60% of the change may be
-    /// gone. The ceiling is 0.6 rather than 0.5 because a fixed time is a larger fraction of a shorter
-    /// transition -- the *approved* curve already reaches 53.4% by 45 ms at 0.20 s (`selectionMorph`) and
-    /// 57.7% at 0.18 s (`promptDismiss`), while the curve this project was actually burned by,
-    /// `cubic-bezier(0.22, 1, 0.36, 1)`, sits at 64.7-76.5% across these four durations. The margin is
-    /// therefore about seven points, and it is the whole margin.
+    /// "It looked like nothing" is a statement about how much of the change is spent early, so this
+    /// samples the property itself: at 20% of each transition's own duration, no more than 60% of the
+    /// change may be gone. Sampling a fraction of the timeline rather than an absolute 45 ms is Ruling
+    /// AB, and the separation is now duration-independent: at 20% the approved curve
+    /// `(0.33, 1, 0.68, 1)` sits at ~48.8% and the curve this project was actually burned by,
+    /// `(0.22, 1, 0.36, 1)`, at ~67.4% -- nineteen points apart at *every* duration, because the sample
+    /// point travels with the transition. The contract is expressed in durations, so this is the
+    /// dimensionally correct axis; the old absolute sample meant different things at 0.18 s and 0.28 s
+    /// (approved reached 57.7% by 45 ms at 0.18 s, and the burned curve slipped under the ceiling
+    /// entirely at 0.32 s, at 52.8%).
     ///
-    /// The hierarchy, honestly: `testEachTransitionIsExactlyAsSpecified` is the primary guard. It pins each
-    /// of the seven ids to an exact `Curve`, so a *known* transition cannot be changed without failing
-    /// there. This test is the net for a **new** transition: a duration this plan has never sampled could
-    /// put an approved curve anywhere in that 46-58% band, so the control-point numbers alone cannot say
-    /// whether it spends its change too early and the sampled progress can. It is not claimed to catch
-    /// anything, for today's seven ids, that the exactness table does not already catch.
-    func testNoCurveSpendsMostOfItsChangeInFortyFiveMilliseconds() {
+    /// The hierarchy, honestly: `testEachTransitionIsExactlyAsSpecified` is the primary guard. It pins
+    /// each of the seven ids to an exact `Curve`, so a *known* transition cannot be changed without
+    /// failing there. This test is the net for a **new** transition: its duration is unknowable, and only
+    /// a duration-independent sample can say whether an in-band set of control points still spends the
+    /// change too early. It is not claimed to catch anything, for today's seven ids, that the exactness
+    /// table does not already catch.
+    func testNoCurveSpendsMostOfItsChangeEarlyInTheTimeline() {
         for t in MotionPlan.all {
             guard case .easeOut(let x1, let y1, let x2, let y2) = t.curve else { continue }
-            let at45 = min(1, 0.045 / t.duration)
-            let spent = progress(of: (x1, y1, x2, y2), atTime: at45)
+            let spent = progress(of: (x1, y1, x2, y2), atTime: 0.2)
             XCTAssertLessThanOrEqual(spent, 0.6,
-                "\(t.id) is \(String(format: "%.0f%%", spent * 100)) done by 45ms")
+                "\(t.id) is \(String(format: "%.0f%%", spent * 100)) done at 20% of its "
+                + "\(t.duration)s timeline")
         }
     }
 

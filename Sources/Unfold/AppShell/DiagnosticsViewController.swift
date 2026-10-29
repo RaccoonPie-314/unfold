@@ -16,6 +16,11 @@ import AppKit
 /// actions therefore have to be `@objc` *and* visible to `#selector`, which is why they are internal
 /// methods on `MainWindowController` rather than private ones: a string selector would survive a rename
 /// as a dead button, `#selector(MainWindowController.runConsistencyTest)` does not survive it at all.
+///
+/// A consequence worth stating for anyone driving these buttons from outside: nil-target dispatch only
+/// finds an answer while the pane's window is **key**. `performClick(_:)` and accessibility press routes
+/// go through the same dispatch, so any harness that presses one has to make the window key first --
+/// otherwise the click is swallowed and nothing is broken in this code.
 final class DiagnosticsViewController: NSViewController {
     private let summaryLabel = NSTextField(wrappingLabelWithString: "")
     private let resultLabel = NSTextField(labelWithString: "")
@@ -107,12 +112,16 @@ final class DiagnosticsViewController: NSViewController {
     /// The diagnostics commands, in the order they have always appeared. `MainWindowController`'s
     /// diagnostics actions are internal `@objc` methods so the responder chain can find them, and
     /// `#selector` keeps each connection checkable at compile time.
+    ///
+    /// The order is asserted by name and position in `DiagnosticsPaneTests`, so inserting a button (the
+    /// `Motion probe` line took Task 5's reserved slot here) is a deliberate two-file edit, not a slip.
     private func buttonRow() -> [NSButton] {
         [pushButton("Run consistency test", #selector(MainWindowController.runConsistencyTest)),
          pushButton("Stress test (40)", #selector(MainWindowController.runStressTest)),
          pushButton("Self-test", #selector(MainWindowController.runSelfTest)),
          pushButton("Idle timeout", #selector(MainWindowController.testIdleTimeout)),
          pushButton("Ctrl-C in Terminal", #selector(MainWindowController.testControlC)),
+         pushButton("Motion probe", #selector(MainWindowController.runMotionProbe)),
          pushButton("Restart tap", #selector(MainWindowController.restartTap)),
          pushButton("Relaunch", #selector(MainWindowController.relaunch)),
          pushButton("Reveal app", #selector(MainWindowController.revealApp))]
