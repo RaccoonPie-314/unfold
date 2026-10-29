@@ -57,14 +57,27 @@ final class ContrastTests: XCTestCase {
     /// and a name this list omits is a row nobody is checking. All sixteen now, which includes the two
     /// entries the list used to leave out -- `pill.statusSymbol`, the red status glyph, and
     /// `row.triggerDisabled`, the deliberately dimmed trigger of a disabled row.
+    ///
+    /// Membership alone is not coverage (Ruling AJ9): it says nothing about a row the *table* adds and this
+    /// list never mentions, so a 17th pair could ship uncertified while the comment above still counted
+    /// sixteen. The equality closes that -- adding a row here and naming it in `names` is now one edit, not
+    /// two, and forgetting either fails.
+    ///
+    /// What this does **not** claim: that the views render their colours *from* this table. They do not;
+    /// `Contrast` certifies the pairs, and the panes are kept in step with it by review. Routing the panes
+    /// through a lookup is Plan 4's, where new labels actually arrive.
     func testTableCoversEveryLabelInTheShell() {
-        for element in ["caption.trigger", "caption.replacement", "caption.try", "editor.hint",
-                        "diagnostics.summary", "diagnostics.result", "diagnostics.section",
-                        "editor.path", "row.preview", "row.trigger", "row.disabledSymbol",
-                        "row.triggerDisabled", "pill.status", "pill.statusSymbol", "window.title",
-                        "editor.hintSymbol"] {
+        let names = ["caption.trigger", "caption.replacement", "caption.try", "editor.hint",
+                     "diagnostics.summary", "diagnostics.result", "diagnostics.section",
+                     "editor.path", "row.preview", "row.trigger", "row.disabledSymbol",
+                     "row.triggerDisabled", "pill.status", "pill.statusSymbol", "window.title",
+                     "editor.hintSymbol"]
+        for element in names {
             XCTAssertTrue(Contrast.pairs.contains { $0.element == element }, "\(element) is undeclared")
         }
+        XCTAssertEqual(Contrast.pairs.count, names.count,
+                       "the table declares \(Contrast.pairs.count) rows but this list names "
+                           + "\(names.count): a pair nobody names is a pair nobody measures")
     }
 
     /// The reason the pill is monochrome while it is working. These two are unusable as Light-mode

@@ -112,18 +112,27 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
             onSelect?(nil)
             return
         case .requested(let index):
-            // The controller asked for this combo and it is on screen. Tell it nothing: `selectRowIndexes`
-            // posts when the row moves and stays silent when it does not, and silence is correct here --
-            // re-displaying the editor under a caret that is mid-word is Ruling Q's bug, and this is the
-            // path a replacement edit takes.
+            // The controller asked for this combo and it is on screen, so the pane adds no report of its
+            // own -- this is the path a replacement edit takes and Ruling Q's rule is that it must not be
+            // re-displayed by the pane. Which path does fire here: `reloadData()` above leaves the table with
+            // **no** selection (measured: `selectedRow == -1`), so `selectRowIndexes` moves the index and
+            // `tableViewSelectionDidChange` carries the landing. The silence below is therefore the pane's
+            // silence, not the table's -- see the note filed against Ruling AJ8.
             tableView.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
         case .landed(let index):
-            // What the user had selected left the list (or there was never a selection to honour), and the
-            // table may keep the *same row index* showing a different combo -- which posts nothing. So the
-            // pane reports the landing itself, after the selection has moved, because the window
-            // controller reads `selectedRowFrame` from inside this callback.
+            // Which path says it, precisely -- the pane reports on exactly one of them (Ruling AJ8).
+            // `selectRowIndexes` posts `tableViewSelectionDidChange` whenever the numeric row index moves,
+            // and the delegate reads the landing off `visible`, so a moved index needs no second report: the
+            // explicit one used to ride on top of it, so the window controller got two `redisplay()` calls --
+            // each rewriting `triggerField.stringValue` and `replacementView.string`, which is Ruling Q's
+            // caret rule broken on the delete path. Measured (`SidebarRowMotionWiringTests`): because the
+            // `reloadData()` above deselects, every delete landing moves the index, so the notification is
+            // the carrier in every landing this pane produces today; the explicit line is the fallback for
+            // the case the old comment called the only one -- a table that keeps the same row index for a
+            // different combo posts nothing. One delivery either way, and the tests count them.
+            let indexAlreadySelected = tableView.selectedRow == index
             tableView.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
-            onSelect?(visible[index].id)
+            if indexAlreadySelected { onSelect?(visible[index].id) }
         }
         animate(diff)
     }
@@ -146,11 +155,9 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
             for arrival in diff.arrivals {
                 guard let rowView = tableView.rowView(atRow: arrival.index, makeIfNecessary: true)
                 else { continue }
-                let final = rowView.frame
                 // The table is flipped, so `maxY` is the edge the row's text sits on: the gap opens at the
                 // arriving row's own baseline and the row unfolds out of it.
-                Motion.morph(rowView, source: CGRect(x: final.minX, y: final.maxY,
-                                                     width: final.width, height: 0),
+                Motion.morph(rowView, source: MotionGeometry.insertionGap(for: rowView.frame),
                              transition: insert)
             }
         }
@@ -164,16 +171,17 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
                 guard let slot = departure.slotIndex,
                       let occupant = tableView.rowView(atRow: slot, makeIfNecessary: true)
                 else { continue }
-                // The neighbour above is the row the gap closes onto; its baseline is the line between it
-                // and the vanished row. A delete at the top of the list has no neighbour above, so the gap
-                // closes onto the top line of the slot itself.
+                // The line the gap closes onto is the neighbour above's baseline -- and with contiguous rows
+                // that is the same rect as the slot's own top edge, because `above.frame.maxY ==
+                // occupant.frame.minY`. The neighbour is still read from the table rather than derived from
+                // the occupant, so the value is measured rather than assumed: `collapseGap(for:)` spells the
+                // edge, and it is what `MotionProbe` hands the same transition.
                 let line: CGRect
                 if slot > 0, let above = tableView.rowView(atRow: slot - 1, makeIfNecessary: true) {
                     line = CGRect(x: above.frame.minX, y: above.frame.maxY,
                                   width: above.frame.width, height: 0)
                 } else {
-                    line = CGRect(x: occupant.frame.minX, y: occupant.frame.minY,
-                                  width: occupant.frame.width, height: 0)
+                    line = MotionGeometry.collapseGap(for: occupant.frame)
                 }
                 Motion.morph(occupant, source: line, transition: remove)
             }
@@ -226,14 +234,18 @@ struct SidebarRowDiff: Equatable {
 
     /// Where the selection lands, and -- just as load-bearing -- whether the pane has to *say* it.
     enum Landing: Equatable {
-        /// The id the controller asked for is still on screen. The table's own selection notification
-        /// covers this and stays silent when the row index does not move, which is the point: a
-        /// replacement edit must not re-display the editor under its own caret (Ruling Q).
+        /// The id the controller asked for is still on screen. The pane adds no report of its own; the
+        /// table's selection notification carries this landing (measured: `reloadData()` deselects first, so
+        /// the index always moves and the notification always posts). What the pane deliberately keeps quiet
+        /// about is re-displaying the editor under a caret that is mid-word -- Ruling Q.
         case requested(Int)
         /// Nothing to honour: the selected combo left the list, so the selection lands on its **neighbour**
-        /// -- the row that now sits where it sat, clamped to the end of the list -- and the pane reports it,
-        /// because a table that keeps the same row index for a different combo posts nothing.
-        /// Two deletes with the confirmation unread used to land on row 0 and delete a combo nobody chose.
+        /// -- the row that now sits where it sat, clamped to the end of the list. Two deletes with the
+        /// confirmation unread used to land on row 0 and delete a combo nobody chose.
+        ///
+        /// Exactly one report, whichever way the index moved (Ruling AJ8): AppKit's selection notification
+        /// carries it when the landing changes the numeric row index, and the pane says it itself only when
+        /// the same index now shows a different combo and the table posts nothing.
         case landed(Int)
         /// No rows at all.
         case empty
@@ -256,8 +268,10 @@ struct SidebarRowDiff: Equatable {
         var departures: [Departure] = []
         for (oldIndex, id) in previous.enumerated() where leaving.contains(id) {
             let slot = next.isEmpty ? nil : min(oldIndex, next.count - 1)
-            // The slot changed hands only when a different combo now sits in it.
-            let moved = slot.map { $0 < previous.count && previous[$0] != next[$0] } ?? false
+            // The slot changed hands only when a different combo now sits in it. `slot` is
+            // `min(oldIndex, next.count - 1)` and `oldIndex` is an index of `previous`, so the slot is
+            // inside both lists by construction -- a bounds check here would be provably always true.
+            let moved = slot.map { previous[$0] != next[$0] } ?? false
             let unclaimed = slot.map { claimedSlots.insert($0).inserted } ?? true
             departures.append(Departure(id: id, oldIndex: oldIndex, slotIndex: slot,
                                         collapses: moved && unclaimed))
@@ -294,7 +308,7 @@ private final class ComboRowView: NSTableCellView {
 
     init() {
         super.init(frame: .zero)
-        triggerLabel.font = .monospacedSystemFont(ofSize: 12.5, weight: .medium)
+        triggerLabel.font = Theme.Font.monoTrigger
         triggerLabel.lineBreakMode = .byTruncatingMiddle
         previewLabel.font = Theme.Font.caption
         previewLabel.textColor = .labelColor

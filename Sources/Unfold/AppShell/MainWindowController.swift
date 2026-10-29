@@ -48,13 +48,22 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     private var pauseItem: NSToolbarItem?
     private var statusLabel: NSTextField?
     private var statusSymbol: NSImageView?
-    /// The pill's symbol + label, kept so `statusMorph` can animate the surface whose width changes.
-    private var statusStack: NSStackView?
+    /// The pill surface `statusMorph` animates: the glass view the toolbar item wraps (Ruling AJ7).
+    ///
+    /// This is the object whose width the user reads as "the pill", because AppKit's toolbar layout sizes
+    /// *this* view to its content; the `NSStackView` inside it is the glass view's own `contentView` and
+    /// only ever has the inset the wrap's padding gives it. Morphing the stack therefore sprang content
+    /// that travelled inside a box which snapped -- two objects on two clocks, which is exactly what the
+    /// spec's rule "nothing animates more than once per interaction / the system already animates this
+    /// control" forbids. Material and content travel as one object now.
+    ///
+    /// Internal rather than private because `StatusPillMotionTests` measures the frames the morph is built
+    /// from on the real toolbar item this controller assembles; nothing outside this file drives it.
+    var statusPill: NSView?
     private var statusItem: NSToolbarItem?
     /// The appearance control, kept so choosing a preference can rewrite *its* tooltip without hunting
     /// the toolbar for it. Reassigned whenever the toolbar rebuilds the item, same as `statusItem`.
     private var appearanceItem: NSToolbarItem?
-    private var addRemoveItems: [NSToolbarItem] = []
     private var statusTimer: Timer?
     /// The status the pill was last rendered for. `refreshStatus` runs once a second; this is what
     /// lets an unchanged tick skip the pill's rewrite instead of re-setting identical values.
@@ -300,13 +309,14 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         stack.spacing = 5
         statusSymbol = symbol
         statusLabel = text
-        statusStack = stack
 
         let item = NSToolbarItem(itemIdentifier: identifier)
         item.label = "Status"
         item.paletteLabel = "Status"
         item.view = Glass.wrap(stack, cornerRadius: Theme.Radius.pill, padding: 6)
         statusItem = item
+        // The wrapped glass view, not the stack inside it, is what `statusMorph` animates: see `statusPill`.
+        statusPill = item.view
         // Toolbar customization can rebuild this item after the fact, and the fresh stack shows "..."
         // until something rewrites it. The change-memo would otherwise wait for the status to differ,
         // so clear it and render once now: the pill self-heals like it did before the memo existed.
@@ -399,7 +409,6 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         if item.itemIdentifier == Self.remove || item.itemIdentifier == Self.add {
             item.isEnabled = true
         }
-        addRemoveItems.forEach { $0.isEnabled = true }
     }
 
     // MARK: - Editor
@@ -577,25 +586,32 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     /// changes but whose text does not has no geometry to travel, so this returns without animating rather
     /// than installing an identity→identity clip.
     ///
-    /// - Parameter previous: the pill stack's frame *before* the label and glyph were rewritten.
+    /// - Parameter previous: the pill surface's frame *before* the label and glyph were rewritten.
     private func morphStatusPill(from previous: CGRect?) {
         guard let morph = MotionPlan.lookup(.statusMorph),
-              let stack = statusStack,
+              let pill = statusPill,
               let previous,
-              stack.window?.isVisible == true else { return }
-        // The pill's width is re-measured by the toolbar, not by the stack: measured here, a synchronous
-        // `layoutSubtreeIfNeeded()` straight after the label change still reported the *old* 43 pt frame,
-        // and the new 188.5 pt one only appeared one main-queue turn later. Morphing onto a rect the view
-        // is about to leave is the jump `Motion` exists to prevent, so the landing rect is read after the
-        // turn that produces it. This defers a *measurement*; the animation still retargets whatever is
-        // in flight, which is `Motion.morph`'s own interrupt behaviour.
-        DispatchQueue.main.async { [weak stack] in
-            guard let stack else { return }
-            let final = stack.frame
+              pill.window?.isVisible == true else { return }
+        // The pill's width is re-measured by the toolbar, not by the content stack: read on the wrapped item
+        // view, the frame is still the *old* 71 pt synchronously after the label rewrite, still 71 pt after a
+        // forced `layoutSubtreeIfNeeded()`, and only arrives at the new 263 pt with the next display pass
+        // (`StatusPillMotionTests`). Morphing onto a rect the view is about to leave is the jump `Motion`
+        // exists to prevent, so the landing rect is read after the turn that produces it. This defers a
+        // *measurement*; the animation still retargets whatever is in flight, which is `Motion.morph`'s own
+        // interrupt behaviour.
+        //
+        // **Measured limit:** a block enqueued with `DispatchQueue.main.async` from here can run *before*
+        // that display pass (measured: it read 71 pt, while ~5 ms later the frame was 263 pt), in which case
+        // `final == previous`, this returns without animating, and the status change goes un-morphed. That is
+        // the scheduling Task 11b shipped, unchanged by Ruling AJ7 -- which retargeted the view, not the clock
+        // -- and it is why the live pass has to confirm the pill visibly moves rather than assume it does.
+        DispatchQueue.main.async { [weak pill] in
+            guard let pill else { return }
+            let final = pill.frame
             guard final != previous,
                   previous.width > 0, previous.height > 0,
                   final.width > 0, final.height > 0 else { return }
-            Motion.morph(stack, source: previous, transition: morph)
+            Motion.morph(pill, source: previous, transition: morph)
         }
     }
 
@@ -620,9 +636,9 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         // status actually changed, so an unchanged second costs nothing and Task 11's later
         // `statusMorph` can fire off this same inequality without ever animating on a no-op tick.
         if status != lastRenderedStatus {
-            // The pill's frame *before* the rewrite is the morph's source: `statusMorph` is a width
-            // change, and the width that matters is the one the user was looking at a moment ago.
-            let previousFrame = statusStack?.frame
+            // The pill surface's frame *before* the rewrite is the morph's source: `statusMorph` is a
+            // width change, and the width that matters is the one the user was looking at a moment ago.
+            let previousFrame = statusPill?.frame
             lastRenderedStatus = status
             statusSymbol?.image = NSImage(systemSymbolName: status.symbolName,
                                           accessibilityDescription: status.text)
@@ -691,8 +707,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         // `growFromEdge`: a zero-width rect on the pane's own leading edge -- the divider side, since this
         // is the rightmost item -- so the content unfolds away from the divider rather than from a generic
         // baseline the way a row does.
-        Motion.morph(content, source: CGRect(x: final.minX, y: final.minY, width: 0, height: final.height),
-                     transition: reveal)
+        Motion.morph(content, source: MotionGeometry.revealEdge(for: final), transition: reveal)
     }
 
     @objc func revealCombos(_ sender: Any?) {
@@ -779,32 +794,5 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     /// so the view exists whether or not the pane is currently expanded.
     @objc func runMotionProbe(_ sender: Any?) {
         MotionProbe.runAll(on: diagnostics.containerForMotionProbe) { line in launchLog("motion: \(line)") }
-    }
-}
-
-/// The window-level line `selectionMorph` travels from a sidebar row to the editor's trigger field
-/// (Ruling AG). It fills its bounds with the semantic separator colour -- the same colour the
-/// pane-hosted proxy used, so it spends no new colour -- draws nothing while hidden, and its `hitTest`
-/// returns nil so an overlay covering the whole window can never eat a click.
-///
-/// **The colour resolves per draw, and a flip triggers that draw.** Measured in-process
-/// (`AppearanceFlipTests`, macOS 27.2): a forced paint with the view in aqua fills
-/// `separatorColor` as black α0.102 and the same view in darkAqua as white α0.122 -- the components the
-/// colour resolves to inside each named appearance -- and one run-loop pass after `NSApp.appearance`
-/// changes the view has painted again, with an idle drain painting zero times in between. So no
-/// `viewDidChangeEffectiveAppearance` override is needed: an appearance flip mid-morph re-resolves the
-/// line on the repaint AppKit already schedules.
-///
-/// Owned by `MainWindowController` because its two rects live in different panes; internal rather than
-/// private only so the overlay tests can read the real view's geometry, and not `final` only so
-/// `AppearanceFlipTests` can count `draw(_:)` calls through a subclass that forwards to `super` -- the
-/// drawing measured stays this implementation's.
-class SelectionOverlayLineView: NSView {
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-
-    override func draw(_ dirtyRect: NSRect) {
-        guard !isHidden else { return }
-        NSColor.separatorColor.setFill()
-        dirtyRect.fill()
     }
 }

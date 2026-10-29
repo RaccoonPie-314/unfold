@@ -166,7 +166,8 @@ private extension SidebarRowDiff {
 }
 
 /// The wiring, on a real `NSTableView` in an offscreen-but-ordered-front window: after one `setRows`,
-/// exactly the row views the diff named carry `unfold.morph`, and no others.
+/// exactly the row views the diff named carry `unfold.morph`, and no others -- and exactly one `onSelect`
+/// delivery reports the landing (Ruling AJ8), which is the invariant the editor's caret rule rests on.
 ///
 /// The baseline pass runs while the window is still ordered out, which is the same condition that keeps a
 /// launch from animating every row onto the screen -- so what the assertions below see is the motion of one
@@ -224,6 +225,69 @@ final class SidebarRowMotionWiringTests: XCTestCase {
                        "a reload of an identical visible set is not a set of arrivals")
     }
 
+    // MARK: - Ruling AJ8: the landing is reported exactly once
+
+    /// The bug AJ8 names: a landing the table already announced. `setRows` used to call `selectRowIndexes`
+    /// **and then** report the same landing itself, so the window controller ran `redisplay()` twice -- each
+    /// pass rewriting `triggerField.stringValue` and `replacementView.string`, which is Ruling Q's caret rule
+    /// broken on the delete path.
+    ///
+    /// Which path carries it, measured rather than assumed: the `tableView.reloadData()` inside `setRows`
+    /// leaves the table with no selection (`selectedRow == -1` read from the pane mid-call), so
+    /// `selectRowIndexes` moves the index and AppKit's own `tableViewSelectionDidChange` posts -- the delegate
+    /// is the carrier, and the pane's explicit line is the fallback for a reload that kept the index.
+    /// Mutation-proven: restoring the unconditional `onSelect?(visible[index].id)` after `selectRowIndexes`
+    /// makes both tests below report **2**.
+    @MainActor
+    func testAMiddleRowDeleteThatMovesTheIndexReportsItsLandingExactlyOnce() throws {
+        let (sidebar, rows) = try presentedSidebar(count: 5)
+        var reports: [UUID?] = []
+        sidebar.onSelect = { reports.append($0) }
+        // Whatever the baseline `setRows` queued has to land before the count starts, so what is counted
+        // below is the delete's report and nothing the fixture left running.
+        drain(0.12)
+        reports.removeAll()
+
+        var remaining = rows
+        remaining.remove(at: 2)
+        sidebar.setRows(remaining, selecting: nil)
+        XCTAssertEqual(sidebar.listTableView.selectedRow, 2,
+                       "the fixture's setup assumes the landing moves the index off row 0")
+        drain(0.12)
+
+        XCTAssertEqual(reports.count, 1,
+                       "a middle-row delete reported its landing \(reports.count) times "
+                           + "(\(reports.map { $0.map(\.uuidString) ?? "nil" })) — the delegate notification "
+                           + "and the pane's explicit report both fired, so the editor was re-displayed "
+                           + "twice and the replacement field rewritten under the user's caret")
+        XCTAssertEqual(reports.first ?? nil, remaining[2].id,
+                       "the one report must name the neighbour the selection landed on")
+    }
+
+    /// The same invariant on the other landing shape: a delete at the **top** of the list, whose landing is
+    /// row 0 (no neighbour above, so `collapseGap` and the clamp both come from the slot itself). Still one
+    /// delivery -- a fix that suppressed the report on one branch only would pass the test above and leave
+    /// this one firing twice.
+    @MainActor
+    func testADeleteAtTheTopOfTheListAlsoReportsItsLandingExactlyOnce() throws {
+        let (sidebar, rows) = try presentedSidebar(count: 4)
+        var reports: [UUID?] = []
+        sidebar.onSelect = { reports.append($0) }
+        drain(0.12)
+        reports.removeAll()
+
+        var remaining = rows
+        remaining.removeFirst()
+        sidebar.setRows(remaining, selecting: nil)
+        drain(0.12)
+
+        XCTAssertEqual(reports.count, 1,
+                       "the first row's delete reported \(reports.count) times: "
+                           + "\(reports.map { $0.map(\.uuidString) ?? "nil" })")
+        XCTAssertEqual(reports.first ?? nil, remaining[0].id,
+                       "and it landed on the row that became the first")
+    }
+
     // MARK: - fixture
 
     /// A sidebar in a real window with `count` rows already presented, ordered front off the corner of any
@@ -259,6 +323,16 @@ final class SidebarRowMotionWiringTests: XCTestCase {
         (0..<max(table.numberOfRows, 0)).filter { row in
             table.rowView(atRow: row, makeIfNecessary: false)?.layer?.animationKeys()?
                 .contains(Motion.morphKey) == true
+        }
+    }
+
+    /// Runs the main loop for `seconds`, so a selection notification AppKit defers to the next turn arrives
+    /// before a count is taken. Same reason `MotionDriverTests` drains instead of waiting on expectations.
+    @MainActor
+    private func drain(_ seconds: TimeInterval) {
+        let started = Date()
+        while Date() < started.addingTimeInterval(seconds) {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.005))
         }
     }
 

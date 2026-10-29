@@ -1,0 +1,127 @@
+import AppKit
+import XCTest
+@testable import Unfold
+
+/// Ruling AJ4: the probe may not measure a geometry no transition uses.
+///
+/// Until now `MotionProbe` handed all five wired transitions the same zero-height full-width gap under the
+/// host, so `paneReveal`'s and `statusMorph`'s logged numbers described a vertical grow neither of them
+/// performs in production, and Ruling AC's promise that "Task 11 gives each transition its own real source
+/// rect" had arrived only at the call sites. These assertions are pure (no render cycle, no window): they
+/// pin the *shape* each transition is given, and that it comes from the same helper the production call site
+/// calls -- which is what makes the probe's log evidence about the app rather than about the probe.
+///
+/// Mutation-proven: reverting `sourceRect(for:final:)` to the single shared gap fails
+/// `testTheProbeNoLongerHandsEveryTransitionTheSameRect` and every shape assertion below that is not
+/// `scaleFromGap`, because the gap sits under `maxY` and the rest are not.
+final class MotionProbeTests: XCTestCase {
+    /// A 200×120 stack at a non-trivial origin, so a rect that ignores `minX`/`minY` cannot pass by luck.
+    private let final = CGRect(x: 40, y: 100, width: 200, height: 120)
+
+    @MainActor
+    func testTheProbeNoLongerHandsEveryTransitionTheSameRect() {
+        let sources = Set(MotionProbe.wiredTransitionIDs.map {
+            MotionProbe.sourceRect(for: MotionPlan.lookup($0)!, final: final)
+        })
+        XCTAssertEqual(sources.count, MotionProbe.wiredTransitionIDs.count,
+                       "five wired transitions, \(sources.count) distinct source rects: the probe is back "
+                           + "to measuring one geometry for all of them")
+    }
+
+    // MARK: - one shape per call site
+
+    @MainActor
+    func testRowInsertIsGivenTheBaselineGapTheArrivingRowActuallyUnfoldsOutOf() {
+        let source = MotionProbe.sourceRect(for: plan(.rowInsert), final: final)
+        XCTAssertEqual(source, MotionGeometry.insertionGap(for: final),
+                       "the probe must use the helper the pane calls, not a copy of its arithmetic")
+        XCTAssertEqual(source.height, 0, "rowInsert unfolds out of a gap, so the source is zero-height")
+        XCTAssertEqual(source.minY, final.maxY, "the gap sits on the arriving row's own baseline")
+        XCTAssertEqual(source.minX, final.minX)
+        XCTAssertEqual(source.width, final.width)
+    }
+
+    @MainActor
+    func testRowRemoveIsGivenTheNeighbourBaselineTheCollapsedSlotActuallyClosesOnto() {
+        let source = MotionProbe.sourceRect(for: plan(.rowRemove), final: final)
+        XCTAssertEqual(source, MotionGeometry.collapseGap(for: final),
+                       "the probe must use the helper the pane falls back to when there is no row above")
+        XCTAssertEqual(source.height, 0)
+        XCTAssertEqual(source.minY, final.minY,
+                       "rowRemove closes onto the line above the slot, not the line under it")
+    }
+
+    @MainActor
+    func testPaneRevealIsGivenAZeroWidthRectOnTheLeadingEdge() {
+        let source = MotionProbe.sourceRect(for: plan(.paneReveal), final: final)
+        XCTAssertEqual(source, MotionGeometry.revealEdge(for: final),
+                       "the probe must use the helper `toggleDiagnostics` calls")
+        XCTAssertEqual(source.width, 0,
+                       "paneReveal is a horizontal grow: a full-width source is how it came to be logged "
+                           + "as a vertical one")
+        XCTAssertEqual(source.height, final.height)
+        XCTAssertEqual(source.minX, final.minX, "it unfolds away from the divider, its own leading edge")
+        XCTAssertEqual(source.minY, final.minY)
+    }
+
+    @MainActor
+    func testStatusMorphIsGivenAWidthChangeAndNotAGrow() {
+        let source = MotionProbe.sourceRect(for: plan(.statusMorph), final: final)
+        XCTAssertEqual(source.height, final.height,
+                       "the pill's height never changes; a source with a different height is the old gap")
+        XCTAssertEqual(source.minY, final.minY)
+        XCTAssertNotEqual(source.width, final.width,
+                          "statusMorph IS a width change — an equal width would morph identity onto identity")
+        XCTAssertEqual(source.minX, final.minX, "the pill keeps its origin and grows or shrinks from it")
+    }
+
+    @MainActor
+    func testSelectionMorphIsGivenTheRowToFieldTravelOnTheAxisProductionMovesAlong() {
+        let source = MotionProbe.sourceRect(for: plan(.selectionMorph), final: final)
+        XCTAssertNotEqual(source.origin, final.origin,
+                          "the shared element does not start where it lands, so an identical origin "
+                              + "measures nothing")
+        XCTAssertEqual(source.height, final.height)
+        XCTAssertEqual(source.width, final.width)
+        XCTAssertLessThan(source.minX, final.minX,
+                          "the pose starts on the sidebar side of the field and travels right, which is the "
+                              + "x axis the old shared gap never touched")
+    }
+
+    // MARK: - the geometry enum is what drives the choice
+
+    @MainActor
+    func testEveryGeometryCaseIsCoveredAndNoTwoCasesShareARect() {
+        // `Geometry` was declared and unread for the whole pass; the probe reading it is what makes the
+        // per-transition shapes a compile-time-exhaustive property rather than a five-way copy-paste.
+        let cases: [Geometry] = [.scaleFromGap, .collapseToGap, .growFromEdge, .positionCrossfade,
+                                 .symbolMorph]
+        var byGeometry: [Geometry: CGRect] = [:]
+        for geometry in cases {
+            let transition = Transition(id: .rowInsert, duration: 0.2, curve: .spring(damping: 0.85),
+                                        geometry: geometry, opacityRamp: 0.2)
+            byGeometry[geometry] = MotionProbe.sourceRect(for: transition, final: final)
+        }
+        XCTAssertEqual(byGeometry.count, cases.count, "every `Geometry` case is exercised")
+        XCTAssertEqual(Set(byGeometry.values).count, cases.count,
+                       "\(cases.count) cases, \(Set(byGeometry.values).count) distinct source rects: the "
+                           + "probe collapses them again (\(byGeometry))")
+        for (geometry, rect) in byGeometry {
+            switch geometry {
+            case .scaleFromGap, .collapseToGap, .growFromEdge:
+                XCTAssertTrue(rect.width == 0 || rect.height == 0,
+                              "\(geometry) is a gap or an edge, so one axis has to start closed: \(rect)")
+            case .symbolMorph, .positionCrossfade:
+                XCTAssertTrue(rect.width > 0 && rect.height > 0,
+                              "\(geometry) moves a whole box, not a closing gap: \(rect)")
+            }
+        }
+    }
+
+    private func plan(_ id: TransitionID) -> Transition {
+        guard let transition = MotionPlan.lookup(id) else {
+            XCTFail("\(id.rawValue) is not in the plan"); return MotionPlan.all[0]
+        }
+        return transition
+    }
+}
