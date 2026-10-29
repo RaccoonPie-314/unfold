@@ -1,9 +1,13 @@
 import XCTest
 @testable import Unfold
 
-/// AppKit hands a layer-backed view a coordinate space whose y direction depends on the enclosing
-/// view's flippedness. NSTableRowView is flipped; a plain container is not. One sign error and every
-/// morph moves the wrong way, which reads as bad easing rather than bad math.
+/// AppKit gives a layer-backed view's layer the **same** frame as the view, and the container's layer
+/// the same y direction as the view's own space (`isGeometryFlipped` mirrors `isFlipped` -- measured in
+/// `MotionDriverTests.testAFlippedContainerMovesTheSameWayItsOwnCoordinatesSay`). A `transform`
+/// translation therefore runs along the axis the rects are written on, whichever way that axis points,
+/// so the offset is the rect gap as given and there is nothing to negate. That is the opposite of what
+/// this file asserted until Task 10 measured it: the old test pinned `flipped: true` to the negated
+/// offset, and the layer it drove moved away from its source instead of toward it.
 final class MotionGeometryTests: XCTestCase {
     private let final = CGRect(x: 100, y: 200, width: 300, height: 40)
 
@@ -13,12 +17,28 @@ final class MotionGeometryTests: XCTestCase {
         XCTAssertEqual(morph.translation, .zero)
     }
 
-    func testASourceAboveTheTargetPushesOppositeWaysInEachSpace() {
-        let above = CGRect(x: 100, y: 260, width: 300, height: 40)
-        XCTAssertEqual(MotionGeometry.morph(source: above, final: final, flipped: false).translation.height,
-                       60, "unflipped: +y is up, so a source above is a positive offset")
-        XCTAssertEqual(MotionGeometry.morph(source: above, final: final, flipped: true).translation.height,
-                       -60, "flipped: +y is down, so the same source needs the opposite sign")
+    /// The gap in y is `source.midY - final.midY` in **both** orientations, because the layer's space is
+    /// the container's space: `+y` means up in an unflipped view and down in a flipped one, and the
+    /// rects handed to this function are written the same way. Flipping the sign for a flipped container
+    /// put the morph's start on the far side of the resting frame; the driver test measures that.
+    ///
+    /// `flipped` is consequently not an input this math reads. It stays in the signature because Ruling
+    /// AC #3 rules which view the driver must ask, and deleting Task 9's produced API is Task 11's call,
+    /// not a silent side effect of this round.
+    func testTheYOffsetIsTheRectGapInEitherOrientation() {
+        let numericallyAbove = CGRect(x: 100, y: 260, width: 300, height: 40)
+        for flipped in [false, true] {
+            XCTAssertEqual(MotionGeometry.morph(source: numericallyAbove, final: final,
+                                                flipped: flipped).translation.height,
+                           60, "flipped=\(flipped): the offset is the gap the rects state, not its negation")
+        }
+        // And the mirror: a numerically smaller y is 60 the other way in either space.
+        let numericallyBelow = CGRect(x: 100, y: 140, width: 300, height: 40)
+        for flipped in [false, true] {
+            XCTAssertEqual(MotionGeometry.morph(source: numericallyBelow, final: final,
+                                                flipped: flipped).translation.height,
+                           -60, "flipped=\(flipped)")
+        }
     }
 
     func testHeightRatioFollowsSourceOverTarget() {

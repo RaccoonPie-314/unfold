@@ -33,12 +33,12 @@ final class MotionPlanTests: XCTestCase {
     /// real numbers and the id-to-curve-kind mapping is otherwise unpinned.
     func testEachTransitionIsExactlyAsSpecified() {
         let expected: [TransitionID: (duration: Double, curve: Curve, ramp: Double)] = [
-            .rowInsert: (0.26, .spring(damping: 0.85, response: 0.28), 0.2),
+            .rowInsert: (0.26, .spring(damping: 0.85), 0.2),
             .rowRemove: (0.22, .easeOut(0.33, 1, 0.68, 1), 0.2),
             .selectionMorph: (0.20, .easeOut(0.33, 1, 0.68, 1), 0.2),
-            .paneReveal: (0.28, .spring(damping: 0.85, response: 0.30), 0.2),
+            .paneReveal: (0.28, .spring(damping: 0.85), 0.2),
             .statusMorph: (0.24, .easeOut(0.33, 1, 0.68, 1), 0.2),
-            .promptPresent: (0.22, .spring(damping: 0.85, response: 0.26), 0.2),
+            .promptPresent: (0.22, .spring(damping: 0.85), 0.2),
             .promptDismiss: (0.18, .easeOut(0.33, 1, 0.68, 1), 0.2),
         ]
         XCTAssertEqual(Set(MotionPlan.all.map(\.id)), Set(TransitionID.allCases),
@@ -133,14 +133,26 @@ final class MotionPlanTests: XCTestCase {
         }
     }
 
+    /// The spring has exactly one knob now (Ruling AC #1): `damping`, the damping ratio ζ. There is no
+    /// settle-time parameter to pin any more because the transition's own `duration` is the settle time --
+    /// the driver derives the stiffness that makes `CASpringAnimation.settlingDuration` land on it, and
+    /// `MotionDriverTests.testEverySpringSettlesInsideItsOwnDuration` is the proof, because
+    /// `settlingDuration` is QuartzCore and this file stays Foundation-only.
+    ///
+    /// What the band still means: a second-order system only overshoots for ζ < 1, and the overshoot
+    /// ratio is `exp(-πζ/√(1-ζ²))` of the step -- 0.63% at ζ = 0.85, 3.5% at ζ = 0.7. Under 0.7 the morph
+    /// reads as a bounce rather than an arrival; above 1 there is no spring left to time, and Core
+    /// Animation stops reporting a settle time that scales with the parameters (measured: a flat 0.6 s at
+    /// ζ ≥ 1), so the derivation the driver relies on no longer holds.
     func testSpringsAreDampedEnoughToSettleWithoutBouncing() {
+        var springs = 0
         for t in MotionPlan.all {
-            if case .spring(let damping, let response) = t.curve {
+            if case .spring(let damping) = t.curve {
+                springs += 1
                 XCTAssertGreaterThan(damping, 0.7, "\(t.id) overshoots")
-                XCTAssertLessThanOrEqual(damping, 1.0, "\(t.id) overshoots")
-                XCTAssertGreaterThan(response, 0.15, "\(t.id)")
-                XCTAssertLessThan(response, 0.6, "\(t.id)")
+                XCTAssertLessThan(damping, 1.0, "\(t.id) is not underdamped, so it has no settle time")
             }
         }
+        XCTAssertGreaterThan(springs, 0, "no spring left for this test to constrain")
     }
 }

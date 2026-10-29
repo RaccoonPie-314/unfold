@@ -7,9 +7,13 @@ enum TransitionID: String, CaseIterable {
 }
 
 enum Curve: Equatable {
-    /// `damping` 0.85 gives roughly a 5% overshoot; `response` is the SwiftUI-style settle time in
-    /// seconds, mapped onto `CASpringAnimation`'s stiffness/mass by `Motion`.
-    case spring(damping: Double, response: Double)
+    /// A damped spring with one knob. `damping` is the damping ratio ζ, and second-order systems only
+    /// overshoot for ζ < 1 (ζ = 0.85 peaks at ~0.63% of the step, so the settle reads as a stop, not a
+    /// bounce). There is deliberately **no** settle-time parameter: the transition's `duration` *is* the
+    /// settle time, and `Motion` derives the stiffness that makes `CASpringAnimation.settlingDuration`
+    /// land on it. Two clocks that can disagree is what left every spring truncated mid-ramp with a
+    /// visible pop, so one of them had to go (Ruling AC #1).
+    case spring(damping: Double)
     /// Four control points. The approved shape is (0.33, 1, 0.68, 1).
     case easeOut(Double, Double, Double, Double)
 }
@@ -39,17 +43,17 @@ struct Transition: Equatable {
 /// (`MotionGeometry`), and the driver (Task 10) owns the conversion between the two.
 enum MotionPlan {
     static let all: [Transition] = [
-        .init(id: .rowInsert, duration: 0.26, curve: .spring(damping: 0.85, response: 0.28),
+        .init(id: .rowInsert, duration: 0.26, curve: .spring(damping: 0.85),
               geometry: .scaleFromGap, opacityRamp: 0.2),
         .init(id: .rowRemove, duration: 0.22, curve: .easeOut(0.33, 1, 0.68, 1),
               geometry: .collapseToGap, opacityRamp: 0.2),
         .init(id: .selectionMorph, duration: 0.20, curve: .easeOut(0.33, 1, 0.68, 1),
               geometry: .positionCrossfade, opacityRamp: 0.2),
-        .init(id: .paneReveal, duration: 0.28, curve: .spring(damping: 0.85, response: 0.30),
+        .init(id: .paneReveal, duration: 0.28, curve: .spring(damping: 0.85),
               geometry: .growFromEdge, opacityRamp: 0.2),
         .init(id: .statusMorph, duration: 0.24, curve: .easeOut(0.33, 1, 0.68, 1),
               geometry: .symbolMorph, opacityRamp: 0.2),
-        .init(id: .promptPresent, duration: 0.22, curve: .spring(damping: 0.85, response: 0.26),
+        .init(id: .promptPresent, duration: 0.22, curve: .spring(damping: 0.85),
               geometry: .positionCrossfade, opacityRamp: 0.2),
         .init(id: .promptDismiss, duration: 0.18, curve: .easeOut(0.33, 1, 0.68, 1),
               geometry: .positionCrossfade, opacityRamp: 0.2),
