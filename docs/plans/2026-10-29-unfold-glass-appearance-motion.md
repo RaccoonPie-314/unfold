@@ -1071,6 +1071,21 @@ list fades where it passes under the filter, and the magnifier does not touch th
 
 ### Task 7: The contrast table and the colour moves it demands
 
+> **Amended by Ruling X, decided from Task 7's review.** Two things in the code blocks below are wrong and
+> were fixed during execution rather than re-litigated afterwards.
+> (1) **The declared backing is an upper bound, not the surface the app renders.** The window's root view is
+> an `NSVisualEffectView` with `blendingMode = .behindWindow` on a non-opaque window, so *all* content-layer
+> text -- not just the pill -- sits on material that samples the desktop. Measuring against
+> `windowBackgroundColor` therefore certifies the best case (full reduce-transparency), never the worst.
+> The rows stay, the comment says what it is, and Task 12's capture pass owns the real numbers for pane
+> text as well as the pill.
+> (2) **The 13-row table under-declares the shell.** It omits the Diagnostics section header (which the
+> grep gate forces to `labelColor`), the new failure-hint glyph, and the disabled-row slash symbol. Three
+> rows are added: `diagnostics.section` (labelColor, 4.5), `editor.hintSymbol` (systemRed, 3.0),
+> `row.disabledSymbol` (secondaryLabelColor, 3.0). An instrument whose stated purpose is "one pair per
+> labelled element" that skips three of them is the thing this task exists to prevent.
+
+
 **Files:**
 - Create: `Sources/Unfold/Design/Contrast.swift`
 - Create: `Tests/UnfoldTests/ContrastTests.swift`
