@@ -15,6 +15,9 @@ enum MotionGeometry {
 
     /// `source` and `final` must be in the same coordinate space. `flipped` is the enclosing view's
     /// `isFlipped`, which decides the sign of the y offset.
+    ///
+    /// Seam note: this file is `CGFloat` throughout while `MotionPlan`'s durations and curve parameters
+    /// are `Double`; the driver (Task 10) owns the conversion.
     static func morph(source: CGRect, final: CGRect, flipped: Bool) -> MorphTransform {
         guard final.width > 0, final.height > 0 else { return .identity }
         let scale = CGSize(width: clamp(source.width / final.width),
@@ -26,8 +29,8 @@ enum MotionGeometry {
         )
     }
 
+    /// Both divisors are guarded positive above, so a real rect pair cannot produce a non-finite ratio.
     private static func clamp(_ value: CGFloat) -> CGFloat {
-        guard value.isFinite else { return 1 }
-        return max(minimumScale, min(value, 1 / minimumScale))
+        max(minimumScale, min(value, 1 / minimumScale))
     }
 }
