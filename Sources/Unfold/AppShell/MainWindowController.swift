@@ -25,11 +25,10 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     private let splitView = NSSplitViewController()
     private let sidebar = SidebarViewController()
     private let editor = EditorViewController()
+    private let diagnostics = DiagnosticsViewController()
     /// The single source of the filter text. The pane holds no copy of it, so `addCombo` clearing the
     /// filter and the empty-state copy cannot disagree with what the list shows.
     private var filter = ""
-    private let diagnosticsSummary = NSTextField(wrappingLabelWithString: "")
-    private let testResult = NSTextField(labelWithString: "")
 
     private var diagnosticsItem: NSSplitViewItem!
     private var pauseItem: NSToolbarItem?
@@ -74,13 +73,14 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         window.delegate = self
 
         // The panes' views must exist before anything reaches into their controls -- the window's
-        // `initialFirstResponder`, the pane closures below, and the consistency test all do. Loading
-        // them here makes that a contract instead of an accident of `assembleSplitView()` touching
-        // `splitView.view` first.
+        // `initialFirstResponder`, the pane closures below, the consistency test and the first
+        // `refreshStatus()` (which assigns both diagnostics strings) all do. Loading them here makes
+        // that a contract instead of an accident of `assembleSplitView()` touching `splitView.view`
+        // first.
         sidebar.loadViewIfNeeded()
         editor.loadViewIfNeeded()
+        diagnostics.loadViewIfNeeded()
 
-        buildDiagnostics()
         assembleSplitView()
         installToolbar()
         restoreFrame(window)
@@ -130,6 +130,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
 
         // One-shot, because `store.url` is a `let` and a tooltip the user is reading must not be
         // rewritten by the status timer. `refreshStatus()` updates only the shortened label.
+        // Order matters and is not incidental: this is the only call that puts the full path in the
+        // tooltip at all, so it has to stay ahead of the first `refreshStatus()` below.
         editor.setPathTooltip(store.url.path)
 
         // The list, not the filter: an accidental keystroke should move the selection, not quietly
@@ -161,62 +163,9 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
 
     // MARK: - Construction
 
-    private func buildDiagnostics() {
-        diagnosticsSummary.font = .secondaryLabelFont()
-        diagnosticsSummary.textColor = .secondaryLabelColor
-        diagnosticsSummary.isSelectable = true
-        diagnosticsSummary.maximumNumberOfLines = 0
-        diagnosticsSummary.setContentHuggingPriority(.defaultLow, for: .horizontal)
-
-        testResult.font = .secondaryLabelFont()
-        testResult.textColor = .secondaryLabelColor
-        testResult.alignment = .left
-
-        let run = pushButton("Run consistency test", #selector(runConsistencyTest))
-        let stress = pushButton("Stress test (40)", #selector(runStressTest))
-        let selfTest = pushButton("Self-test", #selector(runSelfTest))
-        let idle = pushButton("Idle timeout", #selector(testIdleTimeout))
-        let controlC = pushButton("Ctrl-C in Terminal", #selector(testControlC))
-        let restart = pushButton("Restart tap", #selector(restartTap))
-        let relaunch = pushButton("Relaunch", #selector(relaunch))
-        let revealApp = pushButton("Reveal app", #selector(revealApp))
-
-        let buttons = [run, stress, selfTest, idle, controlC, restart, relaunch, revealApp]
-        buttons.forEach { $0.translatesAutoresizingMaskIntoConstraints = false }
-        let column = NSStackView(views: buttons)
-        column.orientation = .vertical
-        column.alignment = .leading
-        column.spacing = 6
-        buttons.forEach { $0.widthAnchor.constraint(greaterThanOrEqualToConstant: 190).isActive = true }
-
-        let stack = NSStackView(views: [
-            section("Diagnostics"), diagnosticsSummary,
-            Glass.wrap(column, cornerRadius: 10, padding: 8), testResult,
-        ])
-        stack.orientation = .vertical
-        stack.alignment = .width
-        stack.spacing = 10
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
-
-        let container = NSView()
-        container.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            // The safe area, not the top edge: this pane also starts under the unified toolbar.
-            stack.topAnchor.constraint(equalTo: container.safeAreaLayoutGuide.topAnchor),
-            stack.bottomAnchor.constraint(lessThanOrEqualTo: container.bottomAnchor),
-        ])
-        diagnosticsContainer = container
-    }
-
-    private var diagnosticsContainer: NSView!
-
     private func assembleSplitView() {
-        // The panes are their own view controllers now, so they go in the split view directly instead
-        // of through `host`. Their titles are set here because the diagnostics pane still gets its
-        // title from `host(_:label:)`.
+        // All three panes are view controllers of their own now, so they go into the split view
+        // directly; their titles are set here because the split view item takes it from the controller.
         sidebar.title = "Combos"
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebar)
         sidebarItem.minimumThickness = 190
@@ -229,7 +178,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         detail.minimumThickness = 380
         splitView.addSplitViewItem(detail)
 
-        diagnosticsItem = NSSplitViewItem(viewController: host(diagnosticsContainer, label: "Diagnostics"))
+        diagnostics.title = "Diagnostics"
+        diagnosticsItem = NSSplitViewItem(viewController: diagnostics)
         diagnosticsItem.minimumThickness = 230
         diagnosticsItem.canCollapse = true
         diagnosticsItem.isCollapsed = true
@@ -260,40 +210,6 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         toolbar.centeredItemIdentifier = nil
         window?.toolbar = toolbar
         window?.toolbarStyle = .unified
-    }
-
-    /// A view controller wrapping a view, so the split view items can host plain views and the
-    /// sidebar material applies to the whole pane.
-    private func host(_ view: NSView, label: String) -> NSViewController {
-        let controller = NSViewController()
-        controller.title = label
-        controller.view = view
-        return controller
-    }
-
-    private func vstack(_ views: [NSView], spacing: CGFloat) -> NSStackView {
-        let stack = NSStackView(views: views)
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = spacing
-        return stack
-    }
-
-    private func section(_ text: String) -> NSTextField {
-        let label = NSTextField(labelWithString: text)
-        label.font = .systemFont(ofSize: 11, weight: .semibold)
-        label.textColor = .secondaryLabelColor
-        // Explicit: a label stretched to its container's width by a stack view otherwise resolves
-        // `.natural` alignment against its own writing direction and lands the text on the right.
-        label.alignment = .left
-        return label
-    }
-
-    private func pushButton(_ title: String, _ action: Selector) -> NSButton {
-        let button = NSButton(title: title, target: self, action: action)
-        button.bezelStyle = .rounded
-        button.controlSize = .small
-        return button
     }
 
     // MARK: - Toolbar
@@ -540,13 +456,15 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
                                    accessibilityDescription: coordinator.isPaused ? "Resume" : "Pause")
         pauseItem?.label = coordinator.isPaused ? "Resume" : "Pause"
         editor.showPath(short: shortPath())
-        diagnosticsSummary.stringValue =
+        // The strings are built here, not in the pane: they come from the coordinator, which the pane
+        // does not know exists. The pane renders the two it is given.
+        diagnostics.summary =
             "Keystrokes seen \(coordinator.keystrokesSeen)\n"
             + "Tap switched off by macOS \(coordinator.tapDisableObservations)×\n"
             + "Combos \(coordinator.activeCount) live, \(coordinator.inactivePlaceholderCount) need the prompt UI\n"
             + "Last event \(coordinator.lastRouting ?? "none")\n"
             + "Last expansion \(coordinator.lastExpansion.map { "«\($0.replacingOccurrences(of: "\n", with: "⏎"))»" } ?? "—")"
-        testResult.stringValue = consistencyTest.summary
+        diagnostics.testResult = consistencyTest.summary
     }
 
     private func shortPath() -> String {
@@ -575,16 +493,22 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         NSWorkspace.shared.activateFileViewerSelecting([store.url])
     }
 
-    @objc private func revealApp() {
+    // The eight diagnostics actions below (`revealApp`, `restartTap`, `relaunch` and the five under
+    // "Diagnostics actions") are internal rather than private: `DiagnosticsViewController`'s buttons
+    // reference them with `#selector(MainWindowController.runSelfTest)`-style selectors and are sent
+    // with a nil target, so the pane needs them visible at compile time and the responder chain needs
+    // to reach them at runtime.
+
+    @objc func revealApp() {
         NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
     }
 
-    @objc private func restartTap() {
+    @objc func restartTap() {
         _ = coordinator.restartTap()
         refreshStatus()
     }
 
-    @objc private func relaunch() {
+    @objc func relaunch() {
         let path = Bundle.main.bundlePath
         let helper = Process()
         helper.executableURL = URL(fileURLWithPath: "/bin/sh")
@@ -595,7 +519,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
 
     // MARK: - Diagnostics actions
 
-    @objc private func runSelfTest() {
+    @objc func runSelfTest() {
         show()
         editor.beginTryEdit()
         SyntheticKeys.selectAll()
@@ -604,7 +528,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         }
     }
 
-    @objc private func testIdleTimeout() {
+    @objc func testIdleTimeout() {
         show()
         editor.beginTryEdit()
         SyntheticKeys.type("ad") { [weak self] in
@@ -615,7 +539,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         }
     }
 
-    @objc private func testControlC() {
+    @objc func testControlC() {
         window?.orderOut(nil)
         let terminal = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Terminal").first
         terminal?.activate(options: [.activateAllWindows])
@@ -628,23 +552,17 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         }
     }
 
-    @objc private func runConsistencyTest() {
+    @objc func runConsistencyTest() {
         show()
         consistencyTest.start(roundsPerCase: 2) { [weak self] summary in
-            self?.testResult.stringValue = summary
+            self?.diagnostics.testResult = summary
         }
     }
 
-    @objc private func runStressTest() {
+    @objc func runStressTest() {
         show()
         consistencyTest.start(stressRounds: 40) { [weak self] summary in
-            self?.testResult.stringValue = summary
+            self?.diagnostics.testResult = summary
         }
     }
-}
-
-private extension NSFont {
-    /// The caption size on macOS. Ten points is the platform floor accessibility.md sets; 11 keeps
-    /// secondary text legible without competing with the 13-point body.
-    static func secondaryLabelFont() -> NSFont { .systemFont(ofSize: 11) }
 }
