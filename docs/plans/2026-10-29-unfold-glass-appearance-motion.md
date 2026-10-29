@@ -974,6 +974,22 @@ button, confirm the counters still update once a second and the pane still colla
 
 ### Task 6: One glass container, interactive glass
 
+> **Superseded by Ruling V, decided during execution.** Steps 1 and 2 below are **not** to be done.
+> `NSGlassEffectContainerView` is documented to merge *descendant glass effect views*
+> (`NSGlassEffectView.h:49-59`), and this app has no site with two of them: the status pill is one
+> `NSGlassEffectView` around an image and a label, and the Diagnostics cluster is one
+> `NSGlassEffectView` around eight standard rounded buttons whose system material is drawn inside each
+> control, not as a descendant glass view. A container over one pane merges nothing, adds an Auto Layout
+> level, and performs the header's documented effect 1 -- elevating its descendants' z-order -- which is an
+> unverifiable change to a surface nobody has looked at. `Glass.container` and `Glass.statusPill` are
+> therefore not produced, and `effectIsInteractive` stays set inside the existing `Glass.wrap`, which is
+> where the interactive response this task is meant to deliver already lives. What survives of Task 6:
+> **Step 3** (restore the scroll edge) and the verification greps. Open question parked for the live pass,
+> not decided blind: whether the Diagnostics cluster needs its `Glass.wrap` at all, since its eight
+> buttons are system components that "pick up the material automatically" -- if pixels show two glass
+> layers there, the honest fix is removing the wrap, not adding a container. Everything below is kept for
+> the record.
+
 **Files:**
 - Modify: `Sources/Unfold/Design/Glass.swift` (add the container helper)
 - Modify: `Sources/Unfold/AppShell/MainWindowController.swift` (status pill)
