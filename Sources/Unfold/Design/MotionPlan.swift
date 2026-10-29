@@ -30,10 +30,13 @@ struct Transition: Equatable {
     let duration: Double
     let curve: Curve
     let geometry: Geometry
-    /// The anti-flash ramp, as a fraction of the timeline. Kept at 0.2 so opacity never carries motion.
+    /// The anti-flash ramp, as a fraction of the timeline. Kept at 0.2 so opacity never carries motion:
+    /// the ramp only ever *starts* an element slightly transparent, and the geometry does the telling.
     let opacityRamp: Double
 }
 
+/// Seam note: durations and curve parameters are `Double` here while the geometry is `CGFloat`
+/// (`MotionGeometry`), and the driver (Task 10) owns the conversion between the two.
 enum MotionPlan {
     static let all: [Transition] = [
         .init(id: .rowInsert, duration: 0.26, curve: .spring(damping: 0.85, response: 0.28),
