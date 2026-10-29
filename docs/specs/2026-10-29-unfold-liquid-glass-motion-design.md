@@ -220,7 +220,8 @@ Two pairs a unit test cannot decide, so they are measured on pixels instead:
 
 `MotionPlan` is a `[Transition]` where each `Transition` carries `id`, `duration`, a `Curve`
 (`.spring(damping:)` -- **one** knob, because the transition's `duration` *is* the settle time and the
-stiffness is derived to fit it (Ruling AC #1) -- or `.easeOut(x1:y1:x2:y2:)`) and a `Geometry`
+stiffness is derived to fit it (Ruling AC #1) -- or `.easeOut` with four unlabeled `Double` control
+points) and a `Geometry`
 (`scaleFromGap`, `collapseToGap`, `growFromEdge`, `positionCrossfade`, `symbolMorph`). There is no `Kind`
 enum and no `Motion.run(_:)`: `Motion.morph(_:source:transition:completion:)` is the only code that touches
 Core Animation, and the FLIP helper is a separate Foundation-only unit -- `MotionGeometry.morph(source:final:)`

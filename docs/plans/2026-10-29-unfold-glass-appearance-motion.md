@@ -110,13 +110,13 @@ deprecated `selectionHighlightStyle = .sourceList` assignment, and every macOS 2
 | 2 | Theme tokens + `AppearancePreference` + startup application | persisted override changes the running app |
 | 3 | Extract `SidebarViewController` | list behaves identically, in its own file |
 | 4 | Extract `EditorViewController` | editor behaves identically; `+`/delete still land |
-| 5 | Extract `DiagnosticsViewController`, thin the controller | `MainWindowController` ≤ ~200 lines |
+| 5 | Extract `DiagnosticsViewController`, thin the controller | three panes out; the controller stops owning pane internals (it lands at 568, not ~200 -- see Ruling T/AJ2) |
 | 6 | ~~One glass container~~ Interactive glass on the existing wraps -- **the container was withdrawn by Ruling V** | press response visible; one `Glass.wrap` per cluster, no merged slab |
 | 7 | `Contrast.swift` + `ContrastTests` + the color moves | Light mode meets the floor, asserted |
 | 8 | `MotionPlan.swift` + `MotionPlanTests` | the seven transitions exist as data |
 | 9 | `MotionGeometry.swift` + `MotionGeometryTests` | morph math proven for both coordinate spaces |
 | 10 | `Motion.swift` + `MotionProbe` + probe button | one transition measured to move geometrically |
-| 11 | Wire `rowInsert`, `rowRemove`, `selectionMorph`, `paneReveal`, `statusMorph`; neighbour selection | all five measured; delete no longer selects row 1 |
+| 11 | Wire `rowInsert`, `rowRemove`, `selectionMorph`, `paneReveal`, `statusMorph`; neighbour selection | all five measured; delete lands on the neighbour instead of row 0 |
 | 12 | Appearance toolbar item, shared status vocabulary, two-appearance capture | toggle works, menu and pill agree |
 
 ---
@@ -2116,7 +2116,7 @@ func setRows(_ rows: [Combo], selecting id: UUID?) {
     tableView.reloadData()
     shownIDs = visible.map(\.id)
 
-    // A delete must land on the neighbour, not on row 1: two fast deletes with the confirmation unread
+    // A delete must land on the neighbour, not on row 0: two fast deletes with the confirmation unread
     // otherwise destroy a combo nobody chose. That selection index is also what `rowRemove` collapses
     // toward, so the fix and the motion are the same change.
     let target: Int
