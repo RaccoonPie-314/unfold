@@ -19,8 +19,10 @@ import XCTest
 /// and the middle pane's re-layout are then one pass, AppKit's.
 ///
 /// What this file can decide in-process, and how:
-/// * the pane **starts closed** (the divider parks at the trailing edge before the first layout, so the
-///   wrapper is 0 wide), and a launch-closed pane **stays** 0 wide as the window grows;
+/// * the pane **starts closed** (the item's `isCollapsed` flag is set and its wrapper shows nothing inside
+///   the split view's bounds -- 0 pt on screen, which is what `diagnosticsPaneWidth` now measures; the
+///   hidden wrapper itself keeps its 230 pt thickness since `FirstExpandPoseTests`' pre-warm lays the pane
+///   out before the first expansion), and a launch-closed pane **stays** 0 wide as the window grows;
 /// * the **geometry target is the designed number** -- the same collapse the animated path drives,
 ///   resolved *synchronously*, lands the wrapper at exactly 230 pt; the landing binds to the item's
 ///   `minimumThickness` (which `assembleSplitView` deliberately sets equal to `diagnosticsExpandedWidth`),

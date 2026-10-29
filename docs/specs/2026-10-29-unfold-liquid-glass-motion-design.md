@@ -249,6 +249,21 @@ asserts the collapse *target* geometry (the pane lands at its `minimumThickness`
 `diagnosticsExpandedWidth`) and the flip of the collapse flag, and the smoothness of the travel is a live-pass
 observation.
 
+**First-expansion pose (measured 2026-10-30, user report: *"the initial expanding ... it doesnt just slide out,
+it flew from the left side awkwardly, after that it expand normal smoothly"*).** An `NSSplitViewItem` inserted
+already collapsed is first laid out at the **leading** edge: launch-closed, the Diagnostics wrapper measured
+`(0, 0, 230, 0)` -- full thickness, **zero height**, `isHidden` -- its divider `(-2, 0, 5, H)`, and the pane's own
+view **not in the hierarchy** (`superview == nil`, frame `(0, 0, 0, 0)`, safe-area top 0, inner stack
+`(0, 0, 0, 0)`). AppKit replaces that with the parked pose -- wrapper `(bounds.maxX, 0, 230, H)`, divider at
+`bounds.maxX − 3`, the pane's view attached, laid out, safe-area top 52 -- only during the *first uncollapse*, so
+the one-clock divider move interpolates the pane across the whole window once and never again. Identical numbers
+were measured on the `60c5a4e` tree, so this is not the `5576ff0` material/hierarchy change: it is what the
+divider reveal inherited. `MainWindowController.prewarmDiagnosticsCollapsePose(_:)` establishes that pose before
+anything can animate by running the production collapse path synchronously (open, then close -- close-only is a
+no-op on a never-opened item, measured), then re-applying the frame `restoreFrame` settled, because AppKit grows
+the window to fit an opened `contentViewController` pane (900 × 580 → 1131 × 580) and does not shrink it back.
+`FirstExpandPoseTests` pins the start geometry, including that the warm-up still leaves the pane closed.
+
 | id | Trigger | Geometry | Duration | Curve |
 |---|---|---|---|---|
 | `selectionSlide` | sidebar row selection | the glass selection pill slides from its previous row to the new one and grows the last ~10% into it (`slideAndGrow`) | 240ms | spring (damping 0.85) |

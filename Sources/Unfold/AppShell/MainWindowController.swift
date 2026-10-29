@@ -41,13 +41,23 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     /// outside this file drives it. It used to be the surface the pill-width transition sprang its width on; that
     /// transition is gone because the width it animated must now never exist as a change.
     var statusPill: NSView?
-    /// The Diagnostics pane's on-screen width: the split view item's **wrapper**, not the pane's own
-    /// view -- measured, a collapsed wrapper is 0 wide while the inner view keeps its last laid-out
-    /// frame, so `view.frame.width` would report an open pane that is clipped away. Internal for
-    /// `DiagnosticsDividerTests`, which measures where the divider actually stopped; nothing outside
-    /// this file reads it.
+    /// The Diagnostics pane's **on-screen** width: 0 while the item is collapsed, otherwise the split view
+    /// item's wrapper intersected with the split view's bounds. Every part of that is measured. The
+    /// wrapper alone cannot carry the claim: after a close it keeps its last thickness (230 pt) and AppKit
+    /// parks it either just *beyond* `bounds.maxX` or back at the open position *inside* the bounds, hidden
+    /// -- both states were seen depending on whether a layout pass ran after the last resize -- and before
+    /// `prewarmDiagnosticsCollapsePose(_:)` the pane's own view had no superview at all, so
+    /// `view.frame.width` reported 0 for a pane that was about to fly in. `isCollapsed` is the
+    /// authoritative state, so it gates the measurement -- as does the wrapper's own `isHidden`, which was
+    /// true on every closed pose measured here -- and the bounds clamp handles the travel.
+    /// Internal for `DiagnosticsDividerTests` and `FirstExpandPoseTests`, which measure where the divider
+    /// actually stopped.
     var diagnosticsPaneWidth: CGFloat {
-        diagnostics.view.superview?.frame.width ?? diagnostics.view.frame.width
+        guard let diagnosticsItem, !diagnosticsItem.isCollapsed,
+              let wrapper = diagnostics.view.superview, !wrapper.isHidden,
+              let split = splitViewView else { return 0 }
+        return max(0, min(wrapper.frame.maxX, split.bounds.maxX)
+                      - max(wrapper.frame.minX, split.bounds.minX))
     }
     /// The collapse state the toggle leaves behind -- same test seam, same reason.
     var diagnosticsPaneCollapsed: Bool { diagnosticsItem?.isCollapsed ?? true }
@@ -137,6 +147,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         assembleSplitView()
         installToolbar()
         restoreFrame(window)
+        prewarmDiagnosticsCollapsePose(window)
 
         // The plumbing between the panes and the state they render. Installed before the first
         // `reloadRows()`, because that call puts a selection on screen and the controller has to hear
@@ -197,6 +208,12 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         startStatusTimer()
     }
 
+    /// The window's designed content size, spelled once: `restoreFrame` opens the window at it (before any
+    /// autosaved frame replaces it) and `prewarmDiagnosticsCollapsePose(_:)` hands that same frame back
+    /// after the warm-up. Internal for `FirstExpandPoseTests`, which asserts the warm-up does not leave the
+    /// window padded by the Diagnostics pane's thickness; nothing else outside this file reads it.
+    static let designedContentSize = NSSize(width: 900, height: 580)
+
     /// Setting `contentViewController` resizes the window to the split view's fitting size -- the sum
     /// of the pane minimums, which is the smallest legal window, not the designed one. So the design
     /// size and the saved frame are applied first, and the sidebar's divider position is applied
@@ -204,7 +221,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     /// (measured -- the sidebar fell back to its 190 pt minimum), so a `setPosition` issued before it is
     /// clobbered. Placing it after the frame settles makes the 218 pt intent the final word.
     private func restoreFrame(_ window: NSWindow) {
-        window.setContentSize(NSSize(width: 900, height: 580))
+        window.setContentSize(Self.designedContentSize)
         if !window.setFrameAutosaveName("UnfoldMainWindow") {
             window.center()
         }
@@ -213,6 +230,58 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         // sidebar has been opening at its 190 pt minimum ever since, which live-pass item 2 was
         // supposed to catch. The lookup makes the intent real.
         splitViewView?.setPosition(218, ofDividerAt: 0)
+    }
+
+    /// Establishes, **before anything can animate**, the pose a collapsed trailing pane is supposed to
+    /// be parked in.
+    ///
+    /// The defect this removes (user report of 2026-10-30: *"the initial expanding ... it doesn't just
+    /// slide out, it flew from the left side awkwardly, after that it expand normal smoothly"*): an
+    /// `NSSplitViewItem` inserted **already collapsed** is first laid out at the *leading* edge, not the
+    /// trailing one. Measured on a launch-closed Diagnostics pane in a 900 pt window -- the wrapper is
+    /// `(0, 0, 230, 0)` with `isHidden = true`, its divider is at `x = -2`, and the pane's own view is
+    /// not in the hierarchy at all (`view.superview == nil`, frame `(0, 0, 0, 0)`, safe-area insets 0,
+    /// so the stack pinned to the safe area has never been placed either). AppKit replaces that stale
+    /// pose with the real parked one -- wrapper at `(bounds.maxX, 0, 230, H)`, divider at
+    /// `bounds.maxX − 3`, the pane's view attached, laid out, and carrying its 52 pt safe-area top --
+    /// only *during the first uncollapse*. Since `60c5a4e` the reveal is a divider move inside one
+    /// `NSAnimationContext` with implicit animation on, so that first pass interpolates the wrapper and
+    /// its material from the leading edge across the whole window: the fly-in. Every later expansion
+    /// starts from the pose the first one established, which is exactly why it happens once.
+    ///
+    /// `5576ff0` did not introduce it -- the same launch pose measures identically on the pre-hierarchy
+    /// tree (`60c5a4e`: wrapper `(0, 0, 230, 0)`, divider `x = -2`, pane view with no superview), and
+    /// the material view is only the thing being dragged, not the cause.
+    ///
+    /// The pre-warm is the production collapse path, run synchronously: open, then close. It ends in the
+    /// pose measured after a manual open/close cycle, so the first animated expansion starts where the
+    /// second does. Open-then-close and not close-only because close-only is a no-op here (measured:
+    /// `setPosition(bounds.maxX, ofDividerAt: 1)` on an item that has never been open leaves the
+    /// wrapper, the divider and the detached pane view exactly where they were). This pre-warms the
+    /// layout; it does not suppress, shorten or special-case the first animation.
+    ///
+    /// Runs after `restoreFrame`, for both halves of the reason: the pose is expressed against
+    /// `split.bounds.maxX` (which the autosaved frame re-runs the layout for), and the geometry laid out
+    /// during the warm-up has to be the geometry the pane is finally displayed in -- measured, warming up
+    /// *before* the design size lands leaves the pane at the pre-resize height (wrapper 480 pt tall in a
+    /// 580 pt split view, stack at y 24 instead of y 124), which is a smaller but real version of the same
+    /// defect: the first expansion animates a resize and a content shift.
+    ///
+    /// The open step grows the window, because AppKit sizes a `contentViewController` window to its
+    /// content's fitting size (measured: 900 × 580 → 1131 × 580) and the close step does not shrink it
+    /// back -- so the frame `restoreFrame` settled is re-applied afterwards. The pane keeps the geometry the
+    /// close established (full height, thickness 230, laid out, hidden); where the hidden wrapper sits
+    /// after that -- just past `bounds.maxX`, or back at the open position inside the bounds -- is AppKit's
+    /// choice and is not what the fly-in was: the defect was starting at `x = 0` with a zero-height,
+    /// never-laid-out pane view, and neither of those is reachable from here.
+    private func prewarmDiagnosticsCollapsePose(_ window: NSWindow) {
+        guard diagnosticsItem?.isCollapsed == true, splitViewView != nil else { return }
+        let settledFrame = window.frame
+        setDiagnosticsCollapsed(false, animated: false)
+        setDiagnosticsCollapsed(true, animated: false)
+        if window.frame != settledFrame {
+            window.setFrame(settledFrame, display: false)
+        }
     }
 
     /// The divider index of the Diagnostics pane: sidebar, editor, diagnostics makes it item 2 and
@@ -729,6 +798,23 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         split.layoutSubtreeIfNeeded()
         let open = !collapsed
         let target = open ? split.bounds.maxX - Self.diagnosticsExpandedWidth : split.bounds.maxX
+        // ---- TEMPORARY LIVE-PASS INSTRUMENTATION (first-expand diagnosis, 2026-10-30) ----
+        // One line per *expansion* in /tmp/unfold-launch.log; grep for `diag-expand-pose`. It records the
+        // geometry the divider move is starting FROM, which is the whole defect.
+        // FIXED (the first line must look like the later ones): `wrapper` is `x 0 230 H` with x past the
+        // middle of `boundsMaxX` and H == boundsMaxX-scale window height, and `paneView={0 0 230 H}` with
+        // `safeTop=52.0`. Whether x reads just past `boundsMaxX` or at `boundsMaxX − 230` is AppKit's
+        // choice and both are correct -- it is the same pose the second expansion reports.
+        // BROKEN (the fly-in): the FIRST line only, reading `wrapper={0 0 230 0}` (x 0, height 0) and
+        // `paneView={0 0 0 0} safeTop=0.0`, while the later lines read like the fixed ones.
+        // DELETE once the live pass has confirmed the first line.
+        if open {
+            launchLog("diag-expand-pose target=\(target) boundsMaxX=\(split.bounds.maxX) "
+                + "wrapper=\(diagnostics.view.superview.map { NSStringFromRect($0.frame) } ?? "nil") "
+                + "paneView=\(NSStringFromRect(diagnostics.view.frame)) "
+                + "safeTop=\(diagnostics.view.safeAreaInsets.top)")
+        }
+        // ---- END TEMPORARY LIVE-PASS INSTRUMENTATION ----
         let move: () -> Void = {
             // Lift the collapse before the position can travel open; lower it after the position
             // reaches the trailing edge when closing (a drag to the edge auto-collapses the item).
