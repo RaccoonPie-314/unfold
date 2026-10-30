@@ -55,12 +55,18 @@ Every task's requirements implicitly include this section.
   at the end of every task; the self-test buttons hold a reference to the "Try it" text view, whose
   owner changes in Task 4.
 - Commit messages: plain imperative sentences, no `feat:` prefixes.
-- **Git -- this bullet supersedes every per-task "Stop for review ... no commit" step below.** On
-  2026-10-29 one local commit per task was authorised on the current branch
-  (`task/unfold-keyboard-layer`), so each task's final step is: run its verification, `git add` only the
-  files that task changed, commit once, then stop for review. Commit messages are plain imperative sentences with
-  no `feat:` prefix and no trailer. **Never** `git push`, `git tag`, `git commit --amend`, `git stash`, or
-  `git checkout -- <path>`; never stage a file the task did not change. Pushing happens outside the plan.
+- **Git -- this bullet supersedes every per-task "Stop for review ... no commit" step below, and every
+  "never push" parenthetical in those steps.** Each task's final step is: run its verification, `git add`
+  only the files that task changed, commit once, then stop for review. Commit messages are plain imperative
+  sentences with no `feat:` prefix and no trailer. Pushing is not part of a task: it happens only when asked
+  for, and then in the same breath as the commit it belongs to, with the remote named
+  (`git push origin <branch>`). Never
+  `git tag` unless a backup is asked for, `git commit --amend`, `git stash`, `git checkout -- <path>`, or a
+  force-push; never stage a file the task did not change.
+- **Trunk.** `main` is the trunk and carries the whole project as of 2026-10-31. The `task/` branches exist
+  to work a plan and are deleted once it merges, so a task should read its branch from `git branch
+  --show-current` rather than assume a name -- the one this plan was written against,
+  `task/unfold-keyboard-layer`, is gone.
 - The project path contains a space: `"$REPO_ROOT"`. Quote it
   in every command.
 - Baseline before starting, measured 2026-10-29: **186 test methods, 0 failures**, across three targets
@@ -117,7 +123,7 @@ deprecated `selectionHighlightStyle = .sourceList` assignment, and every macOS 2
 | 8 | `MotionPlan.swift` + `MotionPlanTests` | three `Transition`s exist as data (`selectionSlide`, `promptPresent`, `promptDismiss`) plus the Diagnostics divider's `dividerDuration`/`dividerCurve` pair -- the row originally read "seven transitions"; the four-item 2026-10-29 pass deleted `rowInsert`, `rowRemove`, `selectionMorph`, `paneReveal` and `statusMorph` by user decision |
 | 9 | `MotionGeometry.swift` + `MotionGeometryTests` | morph math proven for both coordinate spaces |
 | 10 | `Motion.swift` + `MotionProbe` + probe button | one transition measured to move geometrically |
-| 11 | ~~Wire `rowInsert`, `rowRemove`, `selectionMorph`, `paneReveal`, `statusMorph`; neighbour selection~~ -- the 2026-10-29 four-item pass left only the glass selection pill (`selectionSlide`, item 1); `statusMorph` (item 2) and `paneReveal` (item 3) are deleted -- the Diagnostics reveal is one AppKit divider move (`setDiagnosticsCollapsed`, item 3), not a morph; the Enabled control is a native `NSSwitch` pill with a separate "Enabled" label (item 4), not a checkbox; neighbour selection stands | selection pill + one-clock divider measured; delete lands on the neighbour instead of row 0 |
+| 11 | ~~Wire `rowInsert`, `rowRemove`, `selectionMorph`, `paneReveal`, `statusMorph`; neighbour selection~~ -- the 2026-10-29 four-item pass left only the glass selection pill (`selectionSlide`, item 1); `statusMorph` (item 2) and `paneReveal` (item 3) are deleted -- the Diagnostics reveal is one AppKit divider move (`setDiagnosticsCollapsed`, item 3), not a morph; the Enabled control is a native `NSSwitch` pill with a separate "Enabled" label (item 4), not a checkbox; neighbour selection stands | selection pill + one-clock divider measured; delete lands on the neighbour instead of row 0. **Reopened 2026-10-30:** that one clock was still running three motions at once -- see Task 11's `paneReveal` callout; fixed in `eca5055` |
 | 12 | Appearance toolbar item, shared status vocabulary, two-appearance capture | toggle works, menu and pill agree |
 
 ---
@@ -2259,6 +2265,15 @@ the field never does.)*
 `isCollapsed`, using its own leading edge as the source; keep the split view's own animation and morph
 the content, not the divider.
 
+*(Not what shipped -- and not what shipped twice more either. `60c5a4e` deleted this content transform
+outright and made the reveal a divider move on the user's objection to "just a line there". `eca5055` then
+found the divider's "one clock" was still running three motions at once: a Core Animation implicit action
+duplicating AppKit's glide, the content pinned to the pane view's trailing edge (which travels 214 pt off
+the right of the window mid-move, because AppKit gives a split item's view its full thickness and parks it
+at the divider), and the editor hint re-wrapping every frame as the pane narrowed. Spec Rulings AL, AM and
+AN carry the measurements; the code cites them at `MainWindowController.setDiagnosticsCollapsed` and
+`EditorViewController.freezeHintWrapWidth`.)*
+
 `statusMorph`: in `refreshStatus`, when the symbol name or the label text actually changed, run
 `statusMorph` on the pill's stack and use `NSImage(systemSymbolName:)` plus
 `symbolConfiguration` with `.hierarchicalColor` so the replacement is a morph rather than a swap. Do
@@ -2532,3 +2547,11 @@ isolated copy of the repo (macOS 27.2, SDK 27.0, Swift 6.4) on 2026-10-29: the p
 > this pass, measured rather than recalled (the ten new `UnfoldTests` methods: seven in `MotionProbeTests`,
 > one in `StatusPillMotionTests`, two landing-count tests in `SidebarRowMotionTests`; `--list-tests | grep -c /`
 > = 265).
+
+**Re-measured 2026-10-31 at `eca5055`, the same way: 276 methods, 0 failures** -- 99 `UnfoldTests` /
+106 `UnfoldMacTests` / 71 `UnfoldEngineTests`. Eleven `UnfoldTests` methods have landed since the snapshot
+above; four are the Diagnostics reveal fix -- two in `DiagnosticsRevealClockTests` (the implicit actions
+AppKit installs on the split item's wrapper, which the harness *can* see even though it cannot pump the
+glide), the arithmetic-plus-clip pair in `DiagnosticsPaneTests` (which replaces that file's old
+"leading + trailing, no width constraint" assertion -- the pin it defended is the one that turned out to
+travel), and the hint-freeze test in `DiagnosticsDividerTests`.
