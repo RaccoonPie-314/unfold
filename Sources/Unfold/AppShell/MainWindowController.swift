@@ -798,23 +798,6 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         split.layoutSubtreeIfNeeded()
         let open = !collapsed
         let target = open ? split.bounds.maxX - Self.diagnosticsExpandedWidth : split.bounds.maxX
-        // ---- TEMPORARY LIVE-PASS INSTRUMENTATION (first-expand diagnosis, 2026-10-30) ----
-        // One line per *expansion* in /tmp/unfold-launch.log; grep for `diag-expand-pose`. It records the
-        // geometry the divider move is starting FROM, which is the whole defect.
-        // FIXED (the first line must look like the later ones): `wrapper` is `x 0 230 H` with x past the
-        // middle of `boundsMaxX` and H == boundsMaxX-scale window height, and `paneView={0 0 230 H}` with
-        // `safeTop=52.0`. Whether x reads just past `boundsMaxX` or at `boundsMaxX − 230` is AppKit's
-        // choice and both are correct -- it is the same pose the second expansion reports.
-        // BROKEN (the fly-in): the FIRST line only, reading `wrapper={0 0 230 0}` (x 0, height 0) and
-        // `paneView={0 0 0 0} safeTop=0.0`, while the later lines read like the fixed ones.
-        // DELETE once the live pass has confirmed the first line.
-        if open {
-            launchLog("diag-expand-pose target=\(target) boundsMaxX=\(split.bounds.maxX) "
-                + "wrapper=\(diagnostics.view.superview.map { NSStringFromRect($0.frame) } ?? "nil") "
-                + "paneView=\(NSStringFromRect(diagnostics.view.frame)) "
-                + "safeTop=\(diagnostics.view.safeAreaInsets.top)")
-        }
-        // ---- END TEMPORARY LIVE-PASS INSTRUMENTATION ----
         let move: () -> Void = {
             // Lift the collapse before the position can travel open; lower it after the position
             // reaches the trailing edge when closing (a drag to the edge auto-collapses the item).
