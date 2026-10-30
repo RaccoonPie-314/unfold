@@ -33,18 +33,24 @@ enum Glass {
         return glass
     }
 
-    /// A pane's backing surface: a material that blurs what is behind it, which is what gives the
-    /// glass controls something to refract. `.underWindowBackground` is the material meant for this
+    /// The window's single backing surface: a material that blurs what is behind it, which is what gives
+    /// the glass controls something to refract. `.underWindowBackground` is the material meant for this
     /// slot.
     ///
-    /// **Moved to the content layer on 2026-10-29.** It used to be the window's root view behind a
-    /// pinned `NSSplitView`; that made the split view span the titlebar band and its divider drew
-    /// through the unified toolbar. The split view controller is now the window's own content view
-    /// controller -- AppKit's chrome clips the dividers -- and this material is instead the backmost
-    /// view of the editor and diagnostics pane containers. Standard materials belong in the content
-    /// layer; only Liquid Glass is restricted to the functional layer, so this placement is within
-    /// the project's glass rules. The window stays `isOpaque = false` with a clear background, or a
-    /// behind-window material has nothing to sample.
+    /// **Exactly one of these, pinned to the window's content view, behind the whole split view.** It
+    /// must not be split into per-pane backings: a `.behindWindow` material only paints where a view
+    /// exists, and the 1 pt column each `NSSplitView` divider occupies belongs to no pane, so per-pane
+    /// containers leave that column with nothing behind it. On this window -- `isOpaque = false`, clear
+    /// background -- the unbacked column is the desktop, and the user sees it as a separator line
+    /// crossing the toolbar and "cracking" below it. Measured on a composited capture of the live window
+    /// 2026-10-30: alpha 0.000 in the titlebar band, 0.122 below it, against 1.000 one point to either
+    /// side.
+    ///
+    /// The history, so this does not oscillate again: it was the window root until 2026-10-29, when it
+    /// moved into the panes to answer a divider crossing the toolbar. That was the wrong diagnosis -- the
+    /// root *view controller* was the problem, and only for the divider's x -- and the divider's paint is
+    /// now clipped by `BandClippedSplitView` instead. The window stays `isOpaque = false` with a clear
+    /// background, or a behind-window material has nothing to sample.
     @MainActor
     static func windowBackground() -> NSView {
         let effect = NSVisualEffectView()

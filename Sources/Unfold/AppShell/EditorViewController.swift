@@ -109,12 +109,11 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
         let triggerCaption = caption("Trigger")
         let replacementCaption = caption("Replacement")
         let tryCaption = caption("Try it")
-        // The pane backs itself with the standard `.underWindowBackground` behind-window material:
-        // the split view controller is the window's content view controller (2026-10-29 divider fix),
-        // so there is no window-wide root material any more, and the glass controls need something
-        // translucent behind them to refract. Standard materials belong in the content layer; only
-        // Liquid Glass is restricted to the functional layer.
-        let container = Glass.windowBackground()
+        // A plain container: the window's single `.underWindowBackground` material is installed behind
+        // the whole split view by `MainWindowController`, so the pane neither needs nor wants its own.
+        // Per-pane backings (2026-10-29) left the 1 pt divider column covered by neither pane, and on a
+        // non-opaque window that reads as a see-through line -- see `Glass.windowBackground()`.
+        let container = NSView()
         let views = [triggerCaption, replacementCaption, tryCaption, triggerField, hintSymbol, editorHint,
                      replacementScroll, insertionPopUp, enabledSwitch, enabledLabel, tryScroll, pathLabel]
         views.forEach {

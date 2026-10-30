@@ -81,14 +81,18 @@ final class FirstExpandPoseTests: XCTestCase {
         let (controller, split, pane) = try fixture()
         defer { controller.window?.orderOut(nil) }
 
-        XCTAssertTrue(pane.view is NSVisualEffectView,
-                      "the pane's container is \(type(of: pane.view)); this file measures the material "
-                          + "view that rides the divider, which 5576ff0 made the pane's own view")
         let wrapper = try XCTUnwrap(pane.view.superview,
                                     "the Diagnostics pane's view has no superview before the first "
                                         + "expansion — AppKit has never laid the collapsed item out, so "
                                         + "the first animated divider move interpolates it from the "
                                         + "leading edge: the fly-in the user reported")
+        // The structural fact this file depends on is *which* view rides the divider -- the pane's own,
+        // sitting directly in AppKit's split-item wrapper. Whether that view is a material or a plain
+        // container has changed twice (5576ff0 made it an `NSVisualEffectView`, the 2026-10-30
+        // window-wide-backing fix made it an `NSView`) and is not this test's business.
+        XCTAssertTrue(String(describing: type(of: wrapper)).contains("SplitViewItemViewWrapper"),
+                      "the pane's view is inside \(type(of: wrapper)), not directly in AppKit's "
+                          + "split-item wrapper — this file would be measuring the wrong view's pose")
         XCTAssertGreaterThan(wrapper.frame.width, 0,
                              "the collapsed item's wrapper is \(wrapper.frame.width) pt wide before the "
                                  + "first expansion; the launch pose is the stale (thickness × 0) one")

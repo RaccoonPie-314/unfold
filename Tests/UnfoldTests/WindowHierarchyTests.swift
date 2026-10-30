@@ -20,18 +20,16 @@ import XCTest
 /// window), and AppKit's chrome does not clip dividers of a split view it does not own as content.
 ///
 /// The fix is the standard hierarchy: `window.contentViewController = splitViewController` (what Notes
-/// and Music-class apps do). That removes the window-wide root material the glass pill refracts, so
-/// the material moves into the content layer: the editor and diagnostics pane containers are now
-/// `.underWindowBackground` / `.behindWindow` `NSVisualEffectView`s (measured necessary -- with the root
-/// gone and plain containers, a subtree scan found no behind-window effect view over either pane).
+/// and Music-class apps do). That drops the root *view controller* wrapper, which is what had the
+/// divider's x wrong. It does not, and cannot, drop the window-wide material: a `.behindWindow` material
+/// only paints where a view exists to paint it, and the 1 pt column each divider occupies belongs to no
+/// pane, so per-pane containers leave that column showing the desktop straight through the window. The
+/// material therefore stays one view behind the whole split view -- pinned as a sibling beneath it, not
+/// as the content view itself -- and `testOneWindowWideMaterialBacksTheWholeSplitView` is the contract.
 ///
-/// What this file asserts, and which half of "the divider no longer crosses the titlebar" is provable
-/// in-process: the divider paint itself is not observable without a display pass, and with
-/// `.fullSizeContentView` the split view **still** spans the titlebar band (measured: frame still
-/// (0, 0, 1470, 480) -- that underlap is what lets the sidebar material reach the window top, the same
-/// geometry Notes has). So the assertion is the **structural fact that produces the clipping** -- the
-/// split view controller *is* the window's content view controller, and the root wrapper is gone -- not
-/// a frame claim about the divider region. Whether the pixels actually clip is a live-pass item.
+/// What this file asserts: the split view controller *is* the window's content view controller, the root
+/// wrapper is gone, the material is single and full-bleed, and the pane top spacing still reads the
+/// 52 pt safe area exactly once. The divider's own paint is asserted elsewhere (`DividerChromeClipTests`).
 ///
 /// Safe area, measured before and after (see the report): both panes' top inset stays 52 pt, equal to
 /// the toolbar band (`window.frame.height − contentLayoutRect.height`), and the trigger field's offset
@@ -41,7 +39,8 @@ import XCTest
 ///
 /// Mutation-proven (each run red before reverting):
 /// * restoring the root-wrapper hierarchy fails `testTheSplitViewControllerIsTheWindowContentViewController`;
-/// * making the editor container a plain `NSView` fails `testTheContentPanesCarryTheBehindWindowMaterial`;
+/// * giving each pane its own `Glass.windowBackground()` and deleting the window-wide one fails
+///   `testOneWindowWideMaterialBacksTheWholeSplitView` twice -- the count, and the pane-is-effect-view check;
 /// * pinning the trigger field to the container's top edge instead of the safe area fails
 ///   `testThePaneTopSpacingSurvivesTheHierarchyChange` (gap loses the 52 pt inset).
 final class WindowHierarchyTests: XCTestCase {
@@ -67,25 +66,44 @@ final class WindowHierarchyTests: XCTestCase {
         XCTAssertEqual(window.backgroundColor, .clear)
     }
 
-    /// The `.underWindowBackground` material the glass pill refracts now lives in the content layer,
-    /// as the backmost view (the container itself) of both content panes. Measured necessary for the
-    /// diagnostics pane too: an unbacked container on this clear-backed window showed the raw desktop.
+    /// One window-wide `.underWindowBackground` material, backmost in the window's content view and
+    /// filling it -- and **no** per-pane backing. This is the divider-hole contract: a `.behindWindow`
+    /// material only paints where a view exists, and the 1 pt column each divider occupies belongs to no
+    /// pane, so per-pane containers leave it showing the desktop through a non-opaque window. Measured on
+    /// the live window 2026-10-30 (alpha 0.000 in the band, 0.122 below, 1.000 one point either side),
+    /// and the reason the material moved back out of the panes.
     @MainActor
-    func testTheContentPanesCarryTheBehindWindowMaterial() throws {
+    func testOneWindowWideMaterialBacksTheWholeSplitView() throws {
         let controller = try makeController()
         defer { controller.window?.orderOut(nil) }
+        let window = try XCTUnwrap(controller.window)
+        let host = try XCTUnwrap(window.contentView)
+
+        let backings = host.subviews.compactMap { $0 as? NSVisualEffectView }
+        XCTAssertEqual(backings.count, 1,
+                       "the window's content view has \(backings.count) effect views; exactly one "
+                           + "window-wide backing is the contract, because a per-pane pair leaves the "
+                           + "divider column unbacked")
+        let backing = try XCTUnwrap(backings.first)
+        XCTAssertEqual(backing.material, .underWindowBackground)
+        XCTAssertEqual(backing.blendingMode, .behindWindow)
+        XCTAssertEqual(backing.state, .followsWindowActiveState)
+        XCTAssertEqual(backing.frame, host.bounds,
+                       "the backing does not cover the content view, so some column of the window has "
+                           + "nothing behind it")
+        XCTAssertEqual(host.subviews.first?.frame, host.bounds)
 
         for (name, pane) in [("editor", controller.editorPaneForProbe.view),
                              ("diagnostics", controller.diagnosticsPaneForProbe.view)] {
-            let effect = try XCTUnwrap(pane as? NSVisualEffectView,
-                                       "the \(name) pane's container is \(type(of: pane)), not an "
-                                           + "NSVisualEffectView — the window no longer paints a root "
-                                           + "material, so a plain container here leaves the glass pill "
-                                           + "with nothing translucent to refract")
-            XCTAssertEqual(effect.material, .underWindowBackground)
-            XCTAssertEqual(effect.blendingMode, .behindWindow)
-            XCTAssertEqual(effect.state, .followsWindowActiveState)
+            XCTAssertFalse(pane is NSVisualEffectView,
+                           "the \(name) pane is an effect view again — two stacked .behindWindow "
+                               + "materials double-blur the pane region while the divider between them "
+                               + "stays unbacked")
         }
+        // A non-opaque window with a clear background is what the material samples through; if it ever
+        // becomes opaque the whole question changes shape.
+        XCTAssertFalse(window.isOpaque)
+        XCTAssertEqual(window.backgroundColor, .clear)
     }
 
     /// Top spacing of the detail pane, measured rather than assumed: the safe area still reports the

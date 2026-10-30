@@ -9,10 +9,11 @@ import AppKit
 /// against 13 pt and weight against weight (`typography.md`, `color.md`).
 ///
 /// A pair's backing is the *opaque* material base, and that makes every row here a **best case**: the
-/// equivalent of full reduce-transparency, never the surface the app actually renders. Since the
-/// 2026-10-29 divider fix each content pane roots itself in `Glass.windowBackground()` -- an
-/// `NSVisualEffectView` with `blendingMode = .behindWindow` on a non-opaque window (before that it was
-/// one window-wide root view) -- so the desktop reads through the panes and *all* of this text, the pill
+/// equivalent of full reduce-transparency, never the surface the app actually renders. Since
+/// 2026-10-30 the window is rooted in one `Glass.windowBackground()` behind the whole split view -- an
+/// `NSVisualEffectView` with `blendingMode = .behindWindow` on a non-opaque window (between 2026-10-29 and
+/// that date each pane carried its own, which left the divider column unbacked) -- so the desktop reads
+/// through the panes and *all* of this text, the pill
 /// included, samples colours this table cannot see; the inactive-window material swap is unmodelled here
 /// too. The numbers stay because they are the ceiling worth measuring, but the real ratios for the pane
 /// text, not only the pill, belong to Task 12's capture pass.

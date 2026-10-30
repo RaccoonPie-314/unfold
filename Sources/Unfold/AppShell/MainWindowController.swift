@@ -378,6 +378,28 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         // behind-window material only wherever a pane container was one -- a plain container left its pane
         // region with no material at all, and the window is non-opaque with a clear background.
         window?.contentViewController = splitView
+
+        // One window-wide material, behind the whole split view -- **not** one per content pane.
+        //
+        // Measured on the live window (2026-10-30, composited capture): the 1 pt column each divider
+        // occupies is covered by neither neighbour pane, and a `.behindWindow` material only paints
+        // where a view exists to paint it. With per-pane containers that leaves the divider column with
+        // nothing behind it at all -- captured alpha 0.000 through the titlebar band and 0.122 below it,
+        // i.e. the desktop showing through a nominally dark window. That is the "separator line" the
+        // user has reported three times, and it is why clipping the divider's draw rect changed nothing:
+        // the line was never drawn, it is a hole. It also explains the "cracks" -- a slot of raw desktop
+        // varies with whatever is behind the window.
+        //
+        // The 2026-10-29 move to per-pane materials was a response to the divider crossing the toolbar,
+        // which was never the material's fault (the root *view controller* was, and only for the
+        // divider's x). A single backing cannot leave a seam anywhere, because there is exactly one edge
+        // -- the window's own.
+        if let host = window?.contentView {
+            let backing = Glass.windowBackground()
+            backing.frame = host.bounds
+            backing.autoresizingMask = [.width, .height]
+            host.addSubview(backing, positioned: .below, relativeTo: host.subviews.first)
+        }
     }
 
     private func installToolbar() {
