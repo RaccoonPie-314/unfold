@@ -59,48 +59,44 @@ final class DiagnosticsPaneTests: XCTestCase {
         }
     }
 
-    /// The reveal must slide the pane out, not crush it.
+    /// The pane's content must be pinned so it *cannot* be wider than the pane.
     ///
-    /// The button stack used to be pinned to both edges of the pane container, so it was exactly as wide
-    /// as the container -- and the container narrows toward 0 while the Diagnostics divider travels. Every
-    /// title therefore re-wrapped or truncated somewhere in the middle of that travel, which is the
-    /// "left side of that panel is glitchy, not as smooth when expanding outward" the user reported on
-    /// 2026-10-30: growing hands the content more room than it needs and stays clean, shrinking takes it
-    /// away and reflows. The stack now carries its designed width with a trailing pin, and the container
-    /// clips.
-    func testThePaneSlidesOutInsteadOfBeingCrushed() {
+    /// This is the invariant a 2026-10-30 attempt to fix the reveal's *crush* broke. That attempt pinned
+    /// the stack to a fixed 230 pt with a trailing anchor and set `container.clipsToBounds = true`, which
+    /// did stop the titles re-wrapping as the divider travelled -- and put the button cluster drawing on
+    /// top of the editor's hint text, because the clip never engaged (the cluster is an
+    /// `NSGlassEffectView`, whose layer composites outside a plain view's bounds-clip). The user saw the
+    /// overlap immediately; it was reverted the same day, and this test is what keeps it reverted.
+    ///
+    /// Asserted on the constraint set rather than on resolved geometry, because geometry cannot be made to
+    /// show it here: squeezing the container below the cluster's intrinsic width (~206 pt) does not
+    /// overflow the stack, it makes AppKit break the squeeze instead. Leading + trailing with no width
+    /// constraint is what makes overflow unrepresentable, whatever the content's resistance.
+    ///
+    /// The crush it was chasing -- leading and trailing pins mean the stack narrows with the container and
+    /// the titles re-wrap mid-travel -- is therefore still open. Fix it with something that clips *for
+    /// real*, or with content that does not reflow. Not by letting the stack outgrow its pane.
+    func testThePaneContentIsPinnedSoItCannotOutgrowThePane() throws {
         _ = NSApplication.shared
         let pane = DiagnosticsViewController()
         pane.loadViewIfNeeded()
         let container = pane.view
-        // The **pane's** stack -- the one whose width the divider used to control -- not the button
-        // cluster inside the glass, which is what `containerForMotionProbe` hands out.
-        let stack = try! XCTUnwrap(container.subviews.compactMap { $0 as? NSStackView }.first,
+        let stack = try XCTUnwrap(container.subviews.compactMap { $0 as? NSStackView }.first,
                                   "the pane container has no stack view to measure")
 
-        XCTAssertTrue(container.clipsToBounds,
-                      "a fixed-width stack inside a narrowing container needs something that cuts it off; "
-                          + "without the clip the buttons hang over the editor pane for the travel")
+        let pins = container.constraints.filter { $0.firstItem === stack || $0.secondItem === stack }
+        func pinned(_ attribute: NSLayoutConstraint.Attribute) -> Bool {
+            pins.contains { ($0.firstAttribute == attribute || $0.secondAttribute == attribute)
+                && ($0.firstItem === container || $0.secondItem === container) }
+        }
 
-        // Squeeze the container the way the divider does on the way in -- with a real constraint, because
-        // `setFrameSize` on the pane's own view is simply undone by the next layout pass.
-        let host = NSView(frame: NSRect(x: 0, y: 0, width: 90, height: 400))
-        container.translatesAutoresizingMaskIntoConstraints = false
-        host.addSubview(container)
-        NSLayoutConstraint.activate([
-            container.leadingAnchor.constraint(equalTo: host.leadingAnchor),
-            container.trailingAnchor.constraint(equalTo: host.trailingAnchor),
-            container.topAnchor.constraint(equalTo: host.topAnchor),
-            container.bottomAnchor.constraint(equalTo: host.bottomAnchor),
-        ])
-        host.layoutSubtreeIfNeeded()
-
-        XCTAssertEqual(container.frame.width, 90, accuracy: 0.5, "the fixture is not squeezing the pane")
-        XCTAssertEqual(stack.frame.width, MainWindowController.diagnosticsExpandedWidth, accuracy: 0.5,
-                       "the stack is \(stack.frame.width) pt inside a 90 pt pane — it is being squeezed "
-                           + "to the pane's width again, which is the reflow that made retracting jitter")
-        XCTAssertEqual(stack.frame.maxX, container.frame.maxX, accuracy: 0.5,
-                       "the stack is not trailing-pinned, so a narrowing pane slides it sideways instead "
-                           + "of clipping its leading edge")
+        XCTAssertTrue(pinned(.leading),
+                      "the stack has no leading pin to the pane container — nothing holds its left edge "
+                          + "inside the pane, so a narrowing reveal can put it over the editor")
+        XCTAssertTrue(pinned(.trailing), "the stack has no trailing pin to the pane container")
+        XCTAssertFalse(pinned(.width),
+                       "the stack carries a width constraint against the pane, which is what let it draw "
+                           + "outside the pane on the way in (2026-10-30) — the pane's width is the "
+                           + "divider's business, not the content's")
     }
 }

@@ -83,23 +83,20 @@ final class DiagnosticsViewController: NSViewController {
         // double-blur the region its wrapper covers while leaving the divider column between them
         // unbacked -- the see-through "separator line" measured on the live window 2026-10-30.
         let container = NSView()
-        // The container, not AppKit's split-item wrapper, is what cuts the stack off as the pane narrows.
-        // Relying on the wrapper to clip is not a claim worth making sight unseen: it is a private
-        // `_NSSplitViewItemViewWrapper`, and a fixed-width stack that is *not* clipped would hang its
-        // buttons over the editor pane for the length of the travel.
-        container.clipsToBounds = true
         container.addSubview(stack)
-        // The stack keeps its designed width and is pinned by its **trailing** edge, so the reveal is a
-        // slide and not a crush. Pinning leading *and* trailing (as this did) makes the stack exactly as
-        // wide as the container, and the container narrows toward 0 while the divider travels -- so every
-        // button title re-wraps or truncates somewhere in the middle of the travel and the slab's left
-        // edge jitters. That asymmetry is what the user saw on 2026-10-30: closing "is glitchy, not as
-        // smooth when expanding outward", because growing hands the content more room than it needs and
-        // stays clean, while shrinking takes it away and reflows. With a fixed width the content never
-        // changes pose; the wrapper clips it, which is what a slide out of the trailing edge should look
-        // like. `DiagnosticsPaneTests` pins both halves -- the width, and that something does the clipping.
+        // Pinned to both edges, so the stack can never be wider than the pane. That is what makes the
+        // reveal *crush* the content -- the container narrows toward 0 while the divider travels, and the
+        // titles re-wrap mid-flight (the user's "the left side of that panel is glitchy", 2026-10-30).
+        //
+        // **A fixed-width, trailing-pinned stack with `container.clipsToBounds = true` was tried and
+        // reverted the same day.** It stopped the crush and the user immediately reported the panel's
+        // content drawing over the editor's hint text -- the clip did not engage, almost certainly because
+        // the cluster is an `NSGlassEffectView`, whose layer is composited outside the plain container's
+        // bounds-clip. Overflowing text is worse than a re-wrap, so the crush stays unfixed here rather
+        // than be traded for that. `DiagnosticsPaneTests` now guards the invariant that was broken: the
+        // stack must never exceed its container.
         NSLayoutConstraint.activate([
-            stack.widthAnchor.constraint(equalToConstant: MainWindowController.diagnosticsExpandedWidth),
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             // The safe area, not the top edge: this pane also starts under the unified toolbar.
             stack.topAnchor.constraint(equalTo: container.safeAreaLayoutGuide.topAnchor),
