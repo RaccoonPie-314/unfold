@@ -326,6 +326,12 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     // MARK: - Construction
 
     private func assembleSplitView() {
+        // Apple's documented seam for a custom split view (`NSSplitViewController.h:31`): assign the
+        // `splitView` property before the controller's view loads, which the first statement in this
+        // method is. `BandClippedSplitView` exists because the hierarchy below does *not* clip the
+        // dividers on its own -- see the file header and `WindowHierarchyTests`.
+        splitView.splitView = BandClippedSplitView(frame: .zero)
+
         // All three panes are view controllers of their own now, so they go into the split view
         // directly; their titles are set here because the split view item takes it from the controller.
         sidebar.title = "Combos"
@@ -358,24 +364,19 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         diagnosticsItem.isCollapsed = true
         splitView.addSplitViewItem(diagnosticsItem)
 
-        // The standard hierarchy: **the split view controller is the window's content view controller**,
-        // so AppKit owns the titlebar/toolbar/sidebar chrome and clips the pane dividers below the
-        // toolbar. The previous layout wrapped it in a plain root view controller carrying a window-wide
-        // `Glass.windowBackground()` -- measured before the change, that made the `NSSplitView` span
-        // 0...480 pt while the titlebar+toolbar band is 52 pt (`contentLayoutRect` height 428 of a 480
-        // window), so the editor/diagnostics divider drew straight up through the translucent unified
-        // toolbar (the user's "the separator on the diagnose bar is overlapping", 2026-10-29).
+        // The standard hierarchy: **the split view controller is the window's content view controller**.
+        // The previous layout wrapped it in a plain root view controller carrying a window-wide
+        // `Glass.windowBackground()`, which left the split view's geometry wrong in x. What this change
+        // does *not* do -- measured afterwards, and the reason `BandClippedSplitView` exists -- is clip the
+        // dividers: with `.fullSizeContentView` the split view still spans the 52 pt titlebar band, and
+        // AppKit draws a divider across the receiver's whole rect. See `WindowHierarchyTests`, which
+        // asserts the structure, and `DividerChromeClipTests`, which asserts the clip.
         // The window-wide material was load-bearing -- the hand-placed glass pill needs something
         // translucent behind the controls to refract -- so it moves to the content layer instead: the
         // editor and diagnostics panes each back themselves with `Glass.windowBackground()`. Measured,
         // both are required: after the root went away, a subtree scan of the window's content view found
         // behind-window material only wherever a pane container was one -- a plain container left its pane
         // region with no material at all, and the window is non-opaque with a clear background.
-        // `NSSplitViewController` has no
-        // `init(splitView:)` on this SDK (compile-checked: `type 'NSSplitViewController' has no member
-        // 'init(splitView:)'`), so a custom split view subclass could only be installed through the
-        // `splitView` property before the view loads -- a strictly worse route than the standard
-        // hierarchy, which fixes the chrome itself.
         window?.contentViewController = splitView
     }
 

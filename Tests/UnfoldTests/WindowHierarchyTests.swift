@@ -4,7 +4,12 @@ import UnfoldMac
 import XCTest
 @testable import Unfold
 
-/// The window hierarchy that clips the pane dividers below the unified toolbar.
+/// The window hierarchy that puts the split view controller in charge of the content region.
+///
+/// **Outcome of the live pass this file deferred to, 2026-10-30: the hierarchy does not clip the
+/// dividers.** The user reported the same line again with the Diagnostics pane open ("the separator line
+/// is back"), and the measurement below is why. The clip is `BandClippedSplitView`, asserted by
+/// `DividerChromeClipTests`; this file's claim is the structure, and it still holds.
 ///
 /// The user's screenshot of 2026-10-29: *"the separator on the diagnose bar is overlapping"* -- the
 /// editor/diagnostics divider ran the full height of the window, straight up through the translucent
