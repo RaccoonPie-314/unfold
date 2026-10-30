@@ -32,6 +32,14 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
     /// so a hierarchy change that moved the safe area would fail loudly instead of shifting the form.
     static let firstControlTopGap: CGFloat = 20
 
+    /// The hint label's fixed two-line box. Measured from a one-line label of the caption font rather
+    /// than hard-coded, so a font change moves the slot with it; `EditorPaneTests` pins the number.
+    static let hintSlotHeight: CGFloat = {
+        let one = NSTextField(labelWithString: "Ag")
+        one.font = Theme.Font.caption
+        return one.intrinsicContentSize.height * 2
+    }()
+
     private let triggerField = NSTextField(string: "")
     private let replacementScroll = NSScrollView()
     private let replacementView = NSTextView()
@@ -58,6 +66,10 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
     /// Test seam for `WindowHierarchyTests`: the pane's first control, so the top spacing can be
     /// measured against `Self.firstControlTopGap` instead of trusted to the constraint's name.
     var triggerFieldForProbe: NSTextField { triggerField }
+    var editorHintForProbe: NSTextField { editorHint }
+    /// Internal for `DiagnosticsDividerTests`, which measures that the reveal does not move
+    /// anything below the hint.
+    var replacementScrollForProbe: NSScrollView { replacementScroll }
 
     // MARK: - Construction
 
@@ -163,6 +175,15 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
                                               constant: Self.firstControlTopGap),
             triggerCaption.centerYAnchor.constraint(equalTo: triggerField.centerYAnchor),
             editorHint.topAnchor.constraint(equalTo: triggerField.bottomAnchor, constant: 4),
+            // The hint is a two-line slot, always, and that is what keeps the form still. Its width is
+            // the editor pane's width minus the caption column, so it changes *continuously* while the
+            // Diagnostics divider travels -- and a height that tracks the wrapped line count flips
+            // 2 lines → 1 line at one instant of that travel, dragging the Replacement field, the
+            // pop-up row, Try it and the path label 14 pt in a single step. Recorded off the live
+            // window at 30 fps: the pane edge moves across three frames while the hint's ink box changes
+            // across one. Pinning the box makes the reflow invisible -- the sentence still re-wraps, and
+            // nothing below it moves.
+            editorHint.heightAnchor.constraint(equalToConstant: Self.hintSlotHeight),
 
             replacementScroll.topAnchor.constraint(equalTo: editorHint.bottomAnchor, constant: 16),
             replacementScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 110).withPriority(750),

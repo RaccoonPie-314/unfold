@@ -124,6 +124,63 @@ final class DiagnosticsDividerTests: XCTestCase {
                            + "(\(controller.diagnosticsPaneWidth) pt) — the trailing item must stay at 0")
     }
 
+    /// Opening and closing the Diagnostics pane must not move the editor's form.
+    ///
+    /// The divider travel changes the editor pane's width continuously, and the hint sentence re-wraps
+    /// when the pane crosses the width it needs to sit on one line. With a height that tracked the line
+    /// count, everything pinned below the hint -- Replacement, the pop-up row, Try it, the path label --
+    /// stepped 14 pt at that instant. Recorded off the live window at 30 fps: the pane edge moved across
+    /// three frames while the hint's ink box changed across one, which is the "text glitching, trying to
+    /// go back" the user reported on 2026-10-30. The hint is a fixed two-line slot now, so the re-wrap is
+    /// invisible; this asserts the form below it does not move at all, and that the hint's *width* still
+    /// tracks the pane, so the slot has not simply frozen the layout.
+    @MainActor
+    func testTheRevealDoesNotMoveTheEditorsForm() throws {
+        let controller = try makeController()
+        defer { controller.window?.orderOut(nil) }
+        let editor = controller.editorPaneForProbe
+        let hint = editor.editorHintForProbe
+        // Long enough that this fixture's pane widths straddle the wrap: one line with the pane closed
+        // (the editor is wider), two with it open. The real sentence is shorter and wraps at the user's
+        // 860 pt window; the mechanism is the same, and the intrinsic-height assertion below proves this
+        // fixture really crosses it rather than passing because nothing moved.
+        hint.stringValue = "Saves as you type. A space, comma, period or return fires the trigger. "
+            + "A refused save says why here, in this second clause that must not move the form "
+            + "when the pane travels."
+
+        controller.setDiagnosticsCollapsedForProbe(true)
+        let closed = (width: hint.frame.width, height: hint.frame.height,
+                      intrinsic: hint.intrinsicContentSize.height,
+                      replacementTop: editor.replacementScrollForProbe.frame.minY)
+        controller.setDiagnosticsCollapsedForProbe(false)
+        let open = (width: hint.frame.width, height: hint.frame.height,
+                    intrinsic: hint.intrinsicContentSize.height,
+                    replacementTop: editor.replacementScrollForProbe.frame.minY)
+
+        XCTAssertNotEqual(closed.width, open.width, accuracy: 0.5,
+                          "the hint is \(closed.width) pt wide with the pane closed and \(open.width) pt "
+                              + "with it open in this fixture, so the test is not reaching the re-wrap")
+        let textWidth = (hint.stringValue as NSString)
+            .size(withAttributes: [.font: Theme.Font.caption]).width
+        XCTAssertLessThan(open.width, textWidth,
+                          "the hint's text is \(textWidth) pt wide and the open pane gives it "
+                              + "\(open.width) pt, so it never wraps and the test proves nothing")
+        XCTAssertGreaterThan(closed.width, textWidth,
+                             "the hint's text is \(textWidth) pt wide and the closed pane gives it only "
+                                 + "\(closed.width) pt, so it is 2 lines in both poses — the fixture "
+                                 + "never crosses the wrap where the step used to happen")
+        XCTAssertEqual(open.height, EditorViewController.hintSlotHeight, accuracy: 0.5,
+                       "the hint is \(open.height) pt tall, not the fixed \(EditorViewController.hintSlotHeight) "
+                           + "pt slot — the line count is driving the height again")
+        XCTAssertEqual(closed.height, open.height, accuracy: 0.5,
+                       "the hint's height changed with the pane width (\(closed.height) → \(open.height)), "
+                           + "which is what drags the form below it")
+        XCTAssertEqual(closed.replacementTop, open.replacementTop, accuracy: 0.5,
+                       "the Replacement field sits at y=\(open.replacementTop) with the Diagnostics pane "
+                           + "open and y=\(closed.replacementTop) with it closed — the reveal moves the "
+                           + "editor's form, which is the glitch the user reported")
+    }
+
     /// Every view in `view`'s subtree whose layer currently holds the driver's morph key. The reveal
     /// is supposed to move exactly one thing -- the divider -- so during a correct toggle this is empty
     /// for the whole window.
