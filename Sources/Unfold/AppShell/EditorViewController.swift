@@ -59,6 +59,10 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
     private let tryScroll = NSScrollView()
     private let tryView = NSTextView()
     private let pathLabel = NSTextField(labelWithString: "")
+    /// The hint's trailing pin, held so the Diagnostics reveal can take it off and put it back.
+    private var hintTrailing: NSLayoutConstraint?
+    /// The width that replaces it while the divider travels.
+    private var hintFreeze: NSLayoutConstraint?
 
     /// `ConsistencyTest` types into this and reads it back.
     var tryTextView: NSTextView { tryView }
@@ -134,6 +138,10 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
         }
 
         let guide = container.safeAreaLayoutGuide
+        // Held as a property so `freezeHintWrapWidth` can take it off and put it back; see that method.
+        let hintTrailing = editorHint.trailingAnchor.constraint(equalTo: guide.trailingAnchor,
+                                                               constant: -Theme.Spacing.panePadding)
+        self.hintTrailing = hintTrailing
         // Pane padding + the 82-point caption column, and the same plus a 12-point gutter.
         let captionColumn: CGFloat = Theme.Spacing.panePadding + Theme.Spacing.captionColumn
         let controlColumn: CGFloat = captionColumn + Theme.Spacing.gutter
@@ -160,8 +168,8 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
             tryScroll.leadingAnchor.constraint(equalTo: guide.leadingAnchor, constant: controlColumn),
             triggerField.trailingAnchor.constraint(equalTo: guide.trailingAnchor,
                                                    constant: -Theme.Spacing.panePadding),
-            editorHint.trailingAnchor.constraint(equalTo: guide.trailingAnchor,
-                                                 constant: -Theme.Spacing.panePadding),
+            hintTrailing,
+
             replacementScroll.trailingAnchor.constraint(equalTo: guide.trailingAnchor,
                                                         constant: -Theme.Spacing.panePadding),
             tryScroll.trailingAnchor.constraint(equalTo: guide.trailingAnchor,
@@ -243,6 +251,35 @@ final class EditorViewController: NSViewController, NSTextFieldDelegate, NSTextV
     }
 
     // MARK: - Display
+
+    /// The hint's wrap, frozen for the duration of one Diagnostics reveal.
+    ///
+    /// The divider's travel shrinks this pane every frame -- measured 524 → 294 pt of hint width across one
+    /// 280 ms reveal -- and a wrapping label re-wraps every time its width crosses a word boundary, so the
+    /// sentence re-flowed *while* the panel was sliding. That is the second motion the user saw colliding
+    /// with the first: *"still flickering, specifically with the trigger description text, i think those 2
+    /// transformation are conflicting with each other"*.
+    ///
+    /// The wrap follows the hint's **frame** width, so the freeze is a frame freeze: the trailing pin comes
+    /// off and an explicit width goes on, at the narrower of where the pane is now and where it is going.
+    /// Narrower, not destination, because on the way home the destination is the wider of the two and a
+    /// label pinned to it would overflow a pane that has not finished closing. The text therefore settles
+    /// at one end of the motion or the other, never in the middle of it.
+    func freezeHintWrapWidth(forContainerWidth width: CGFloat) {
+        guard let trailing = hintTrailing else { return }
+        let settled = min(view.bounds.width, width)
+        let insets = editorHint.frame.minX + (view.bounds.width - editorHint.frame.maxX)
+        trailing.isActive = false
+        let freeze = editorHint.widthAnchor.constraint(equalToConstant: max(0, settled - insets))
+        freeze.isActive = true
+        hintFreeze = freeze
+    }
+
+    func releaseHintWrapWidth() {
+        hintFreeze?.isActive = false
+        hintFreeze = nil
+        hintTrailing?.isActive = true
+    }
 
     /// Shows a combo, or resets the form for an empty selection. The empty *message* comes from the
     /// controller through `showHint` -- it depends on the whole library and the filter, not on this

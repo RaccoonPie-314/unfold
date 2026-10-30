@@ -1,4 +1,6 @@
 import AppKit
+import UnfoldEngine
+import UnfoldMac
 import XCTest
 @testable import Unfold
 
@@ -59,44 +61,100 @@ final class DiagnosticsPaneTests: XCTestCase {
         }
     }
 
-    /// The pane's content must be pinned so it *cannot* be wider than the pane.
+    /// The content's minimum width must fit the pane it opens into, and the stack must carry that width as
+    /// its own constraint rather than inheriting it from the container.
     ///
-    /// This is the invariant a 2026-10-30 attempt to fix the reveal's *crush* broke. That attempt pinned
-    /// the stack to a fixed 230 pt with a trailing anchor and set `container.clipsToBounds = true`, which
-    /// did stop the titles re-wrapping as the divider travelled -- and put the button cluster drawing on
-    /// top of the editor's hint text, because the clip never engaged (the cluster is an
-    /// `NSGlassEffectView`, whose layer composites outside a plain view's bounds-clip). The user saw the
-    /// overlap immediately; it was reverted the same day, and this test is what keeps it reverted.
-    ///
-    /// Asserted on the constraint set rather than on resolved geometry, because geometry cannot be made to
-    /// show it here: squeezing the container below the cluster's intrinsic width (~206 pt) does not
-    /// overflow the stack, it makes AppKit break the squeeze instead. Leading + trailing with no width
-    /// constraint is what makes overflow unrepresentable, whatever the content's resistance.
-    ///
-    /// The crush it was chasing -- leading and trailing pins mean the stack narrows with the container and
-    /// the titles re-wrap mid-travel -- is therefore still open. Fix it with something that clips *for
-    /// real*, or with content that does not reflow. Not by letting the stack outgrow its pane.
-    func testThePaneContentIsPinnedSoItCannotOutgrowThePane() throws {
+    /// The button floor was 190 pt, which with the glass's 8 pt padding and the stack's 16 pt insets made
+    /// the content's minimum **238 pt inside a 230 pt pane**. A set that cannot be satisfied at the width
+    /// the pane opens to is resolved by AppKit breaking a pin -- and which pin it breaks changes as the
+    /// container narrows, so the content's pose moved during the reveal. The floor is derived from the
+    /// pane width now, so the arithmetic is one expression instead of three numbers that can drift apart;
+    /// restoring the literal 190 fails this with `238 > 230`.
+    func testThePaneContentFitsThePane() throws {
         _ = NSApplication.shared
         let pane = DiagnosticsViewController()
         pane.loadViewIfNeeded()
         let container = pane.view
         let stack = try XCTUnwrap(container.subviews.compactMap { $0 as? NSStackView }.first,
                                   "the pane container has no stack view to measure")
+        let cluster = pane.containerForMotionProbe
+        cluster.layoutSubtreeIfNeeded()
 
-        let pins = container.constraints.filter { $0.firstItem === stack || $0.secondItem === stack }
-        func pinned(_ attribute: NSLayoutConstraint.Attribute) -> Bool {
-            pins.contains { ($0.firstAttribute == attribute || $0.secondAttribute == attribute)
-                && ($0.firstItem === container || $0.secondItem === container) }
-        }
+        let contentMinimum = cluster.fittingSize.width
+            + 2 * DiagnosticsViewController.glassPadding
+            + 2 * DiagnosticsViewController.stackInset
+        XCTAssertLessThanOrEqual(contentMinimum, MainWindowController.diagnosticsExpandedWidth,
+                                 "the cluster needs \(contentMinimum) pt (\(cluster.fittingSize.width) + "
+                                     + "glass padding + stack insets) but the pane opens to only "
+                                     + "\(MainWindowController.diagnosticsExpandedWidth) pt — an "
+                                     + "unsatisfiable set at rest is resolved by breaking a pin, and the "
+                                     + "broken pin moves during the reveal")
 
-        XCTAssertTrue(pinned(.leading),
-                      "the stack has no leading pin to the pane container — nothing holds its left edge "
-                          + "inside the pane, so a narrowing reveal can put it over the editor")
-        XCTAssertTrue(pinned(.trailing), "the stack has no trailing pin to the pane container")
-        XCTAssertFalse(pinned(.width),
-                       "the stack carries a width constraint against the pane, which is what let it draw "
-                           + "outside the pane on the way in (2026-10-30) — the pane's width is the "
-                           + "divider's business, not the content's")
+        XCTAssertTrue(stack.constraints.contains {
+            $0.firstItem === stack && $0.firstAttribute == .width
+                && $0.secondAttribute == .notAnAttribute
+        }, "the stack has no fixed width, so the reveal can re-lay-it-out instead of holding one pose")
+    }
+
+    /// The curtain's two structural halves, measured where they can actually be seen: with the pane in a
+    /// window, so AppKit's split-item wrapper exists.
+    ///
+    /// *The wrapper, not the pane's own container, is the clipping ancestor.* Mid-travel the wrapper is
+    /// the visible pane (`884...900` on a 900 pt split) while the container is `884...1114` -- AppKit hands the
+    /// item's view its full thickness and parks it at the divider. So a stack pinned to the container's
+    /// trailing edge rides the divider and hangs its titles off the window's right edge until the last
+    /// frames of the travel (the shimmer the user reported on 2026-10-30: *only while the pane is moving,
+    /// only the Diagnostics panel*), and a mask on that container would cut off the very content the pin
+    /// is positioning. The pin and the clip both belong on the wrapper, whose trailing edge sits on the
+    /// window's edge at every sample.
+    @MainActor
+    func testTheWrapperHoldsTheContentStillAndCutsItOff() throws {
+        _ = NSApplication.shared
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("unfold-pane-curtain-\(UUID().uuidString)", isDirectory: true)
+        let store = Store(url: directory.appendingPathComponent("combos.json"))
+        try store.save(CombosFile(formatVersion: CombosFile.currentFormatVersion, combos: []))
+        let controller = MainWindowController(coordinator: ExpansionCoordinator(combos: []), store: store)
+        let window = try XCTUnwrap(controller.window)
+        window.setFrameOrigin(NSPoint(x: -3_200, y: -1_800))
+        window.orderFrontRegardless()
+        let deadline = Date().addingTimeInterval(0.2)
+        while Date() < deadline { RunLoop.main.run(until: deadline) }
+        defer { window.orderOut(nil) }
+
+        let container = controller.diagnosticsPaneForProbe.view
+        let holder = try XCTUnwrap(container.superview,
+                                   "the pane's view has no split-item wrapper to pin to or clip with")
+        let stack = try XCTUnwrap(container.subviews.first as? NSStackView,
+                                  "the pane container has no stack view to measure")
+
+        XCTAssertTrue(holder.wantsLayer && holder.clipsToBounds,
+                      "the split-item wrapper does not clip, so the panel paints over the editor while "
+                          + "the divider travels past it")
+        XCTAssertEqual(holder.layer?.masksToBounds, true,
+                       "the wrapper is not layer-masked, so `clipsToBounds` cannot cut off a "
+                           + "layer-backed glass subview")
+
+        let split = try XCTUnwrap(controller.splitViewForProbe)
+        XCTAssertTrue(split.constraints.contains {
+            ($0.firstItem === stack || $0.secondItem === stack)
+                && ($0.firstAttribute == .trailing || $0.secondAttribute == .trailing)
+        }, "the stack is not pinned to the split view's trailing edge — pinned to the pane container's "
+            + "instead, it rides the divider off the window's right edge and snaps back at the end of the "
+            + "travel")
+        XCTAssertFalse(container.constraints.contains {
+            ($0.firstItem === stack || $0.secondItem === stack)
+                && ($0.firstAttribute == .trailing || $0.secondAttribute == .trailing)
+        }, "the stack carries a trailing pin to the container again")
+
+        controller.setDiagnosticsCollapsed(false, animated: false)
+        let open = stack.convert(stack.bounds, to: nil)
+        XCTAssertEqual(open.width, MainWindowController.diagnosticsExpandedWidth, accuracy: 1.0,
+                       "the content is \(open.width) pt wide, not the pane's designed "
+                           + "\(MainWindowController.diagnosticsExpandedWidth) pt")
+        XCTAssertEqual(open.maxX, window.contentView?.bounds.maxX ?? -1, accuracy: 2.0,
+                       "the content's right edge sits at \(open.maxX) against a content width of "
+                           + "\(window.contentView?.bounds.maxX ?? -1) — this is the pose the wrapper "
+                           + "pin exists to hold still while the divider moves")
     }
 }

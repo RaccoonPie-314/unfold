@@ -47,6 +47,17 @@ final class DiagnosticsViewController: NSViewController {
 
     // MARK: - Construction
 
+    /// The stack's inset and the glass cluster's padding, spelled once because the button floor below is
+    /// **derived from them**: the content's minimum width has to equal the pane's designed width, or the
+    /// constraint system is over-determined even at rest and AppKit resolves it by breaking the trailing
+    /// pin -- which is what let the cluster hang off the window's right edge mid-reveal.
+    static let stackInset: CGFloat = 16
+    static let glassPadding: CGFloat = 8
+
+    /// The content's minimum width: exactly `MainWindowController.diagnosticsExpandedWidth`. Measured
+    /// before this was spelled out, the floor was 190 + 16 + 32 = **238 pt in a 230 pt pane**.
+    static let contentMinimumWidth: CGFloat = MainWindowController.diagnosticsExpandedWidth
+
     override func loadView() {
         summaryLabel.font = Theme.Font.caption
         summaryLabel.textColor = .labelColor
@@ -66,44 +77,66 @@ final class DiagnosticsViewController: NSViewController {
         buttonCluster.orientation = .vertical
         buttonCluster.alignment = .leading
         buttonCluster.spacing = 6
-        buttons.forEach { $0.widthAnchor.constraint(greaterThanOrEqualToConstant: 190).isActive = true }
+        let buttonMinimum = Self.contentMinimumWidth - 2 * Self.stackInset - 2 * Self.glassPadding
+        buttons.forEach { $0.widthAnchor.constraint(greaterThanOrEqualToConstant: buttonMinimum).isActive = true }
 
         let stack = NSStackView(views: [
             section("Diagnostics"), summaryLabel,
-            Glass.wrap(buttonCluster, cornerRadius: Theme.Radius.card, padding: 8), resultLabel,
+            Glass.wrap(buttonCluster, cornerRadius: Theme.Radius.card, padding: Self.glassPadding),
+            resultLabel,
         ])
         stack.orientation = .vertical
         stack.alignment = .width
         stack.spacing = 10
         stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
+        stack.edgeInsets = NSEdgeInsets(top: Self.stackInset, left: Self.stackInset,
+                                        bottom: Self.stackInset, right: Self.stackInset)
 
         // A plain container, same as the editor pane: `MainWindowController` installs one
         // `.underWindowBackground` material behind the whole split view, and a second one here would
-        // double-blur the region its wrapper covers while leaving the divider column between them
-        // unbacked -- the see-through "separator line" measured on the live window 2026-10-30.
+        // double-blur the region its wrapper covers.
         let container = NSView()
         container.addSubview(stack)
-        // Pinned to both edges, so the stack can never be wider than the pane. That is what makes the
-        // reveal *crush* the content -- the container narrows toward 0 while the divider travels, and the
-        // titles re-wrap mid-flight (the user's "the left side of that panel is glitchy", 2026-10-30).
-        //
-        // **A fixed-width, trailing-pinned stack with `container.clipsToBounds = true` was tried and
-        // reverted the same day.** It stopped the crush and the user immediately reported the panel's
-        // content drawing over the editor's hint text -- the clip did not engage, almost certainly because
-        // the cluster is an `NSGlassEffectView`, whose layer is composited outside the plain container's
-        // bounds-clip. Overflowing text is worse than a re-wrap, so the crush stays unfixed here rather
-        // than be traded for that. `DiagnosticsPaneTests` now guards the invariant that was broken: the
-        // stack must never exceed its container.
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            stack.widthAnchor.constraint(equalToConstant: Self.contentMinimumWidth),
             // The safe area, not the top edge: this pane also starts under the unified toolbar.
             stack.topAnchor.constraint(equalTo: container.safeAreaLayoutGuide.topAnchor),
             stack.bottomAnchor.constraint(lessThanOrEqualTo: container.bottomAnchor),
         ])
+        // **No horizontal pin here, deliberately.** Measured with a per-frame probe on the live window:
+        // AppKit gives this view the item's full thickness and parks it at the divider, so mid-travel the
+        // wrapper is `884...900` while this view is `884...1114` -- its trailing edge is 214 pt off the right of
+        // the window. Pinning the stack to that edge anchors the content to something that travels, which
+        // is what made every title hang off the window's right edge and snap into place over the last
+        // frames of the reveal. `wireRevealPose(inside:)` makes the horizontal pin against the split view,
+        // whose trailing edge is on the window's edge at every sample.
         self.view = container
     }
+
+    /// The pane's horizontal pose, wired once by `MainWindowController` after the split view exists.
+    ///
+    /// Mid-travel the split item's wrapper is the visible pane (`884...900` on a 900 pt split) while the
+    /// item's own view is `884...1114` -- AppKit hands the view the item's full thickness and parks it at the
+    /// divider. So the container's trailing edge travels *off the right of the window*, and a stack pinned
+    /// to it rides the divider and snaps into place over the last frames of the reveal: that is the
+    /// shimmer the user reported on 2026-10-30 ("only while the pane is moving, only the Diagnostics
+    /// panel"). The split view's trailing edge is on the window's edge at every sample, so pinning there
+    /// holds the content still in window space and lets the divider uncover it.
+    ///
+    /// The wrapper is also what cuts the content off -- the container cannot, because the content now sits
+    /// partly outside it. Called from the window controller rather than `viewDidAppear`, which the test
+    /// harness does not reliably deliver and which would leave the stack with no horizontal pin at all.
+    func wireRevealPose(inside splitView: NSSplitView) {
+        guard let holder = view.superview, let stack = view.subviews.first as? NSStackView else { return }
+        holder.wantsLayer = true
+        holder.clipsToBounds = true
+        guard revealPin == nil else { return }
+        let pin = stack.trailingAnchor.constraint(equalTo: splitView.trailingAnchor)
+        pin.isActive = true
+        revealPin = pin
+    }
+
+    private var revealPin: NSLayoutConstraint?
 
     private func section(_ text: String) -> NSTextField {
         let label = NSTextField(labelWithString: text)

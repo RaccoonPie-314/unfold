@@ -181,6 +181,49 @@ final class DiagnosticsDividerTests: XCTestCase {
                            + "editor's form, which is the glitch the user reported")
     }
 
+    /// The reveal's **second** motion, measured 2026-10-30 after the divider itself was clean: the
+    /// divider shrinks the editor every frame (hint width 524 → 294 pt across one travel), so the trigger
+    /// description re-wrapped *while* the panel was sliding -- "still flickering, specifically with the
+    /// trigger description text, i think those 2 transformation are conflicting".
+    ///
+    /// Freezing the wrap at the destination width is `EditorViewController.freezeHintWrapWidth`; this
+    /// proves the freeze holds the text in its final form while the pane is still wide, which is what makes
+    /// the travel carry one motion instead of two.
+    @MainActor
+    func testTheFrozenHintWrapHoldsItsFinalFormWhileThePaneIsStillWide() throws {
+        let controller = try makeController()
+        defer { controller.window?.orderOut(nil) }
+        let editor = controller.editorPaneForProbe
+        let hint = editor.editorHintForProbe
+        hint.stringValue = "Saves as you type. A space, comma, period or return fires the trigger. "
+            + "A refused save says why here, in this second clause that must not move the form "
+            + "when the pane travels."
+
+        controller.setDiagnosticsCollapsedForProbe(true)
+        let closedContainer = editor.view.bounds.width
+        let closedHeight = try XCTUnwrap(hint.cell?.cellSize(forBounds: hint.bounds).height)
+        controller.setDiagnosticsCollapsedForProbe(false)
+        let openContainer = editor.view.bounds.width
+        let openHeight = try XCTUnwrap(hint.cell?.cellSize(forBounds: hint.bounds).height)
+
+        XCTAssertNotEqual(closedHeight, openHeight, accuracy: 0.5,
+                          "this fixture's hint does not straddle a re-wrap (\(closedHeight) pt in both "
+                              + "poses), so it cannot show the freeze doing anything")
+        XCTAssertLessThan(openContainer, closedContainer,
+                          "opening the pane did not narrow the editor, so the travel has no width to cross")
+
+        controller.setDiagnosticsCollapsedForProbe(true)
+        editor.freezeHintWrapWidth(forContainerWidth: openContainer)
+        editor.view.layoutSubtreeIfNeeded()
+        let frozenHeight = try XCTUnwrap(hint.cell?.cellSize(forBounds: hint.bounds).height)
+        let frozenWidth = hint.frame.width
+        XCTAssertEqual(frozenHeight, openHeight, accuracy: 0.5,
+                       "with the wrap frozen for the open width the hint is \(frozenHeight) pt tall at a "
+                           + "frame width of \(frozenWidth) — it would re-flow again during the travel")
+
+        editor.releaseHintWrapWidth()
+    }
+
     /// Every view in `view`'s subtree whose layer currently holds the driver's morph key. The reveal
     /// is supposed to move exactly one thing -- the divider -- so during a correct toggle this is empty
     /// for the whole window.

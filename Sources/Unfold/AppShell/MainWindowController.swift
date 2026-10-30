@@ -148,6 +148,12 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         installToolbar()
         restoreFrame(window)
         prewarmDiagnosticsCollapsePose(window)
+        // The Diagnostics content's horizontal pose, wired **after** the warm-up: until the pane has been
+        // opened once its view has no superview at all (see `prewarmDiagnosticsCollapsePose`), and the
+        // split view itself is only reachable through the lookup `restoreFrame` just exercised.
+        if let split = splitViewView {
+            diagnostics.wireRevealPose(inside: split)
+        }
 
         // The plumbing between the panes and the state they render. Installed before the first
         // `reloadRows()`, because that call puts a selection on screen and the controller has to hear
@@ -829,13 +835,37 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
             if !open { diagnosticsItem.isCollapsed = true }
         }
         if animated {
-            NSAnimationContext.runAnimationGroup { context in
+            // One clock, in two senses. `allowsImplicitAnimation` is what makes the divider travel at
+            // all (measured: with it off the pane snaps to its final rect with no motion), but every
+            // frame change that travel makes *also* handed Core Animation an implicit action on the
+            // split item's wrapper, and two interpolators on one frame means the painted edge is never
+            // where the laid-out edge is. Sampled at 2 ms on the live window, the wrapper's
+            // presentation rect lagged its model rect by up to 21.4 pt mid-travel -- a hole between the
+            // editor's trailing edge and the panel's leading edge, which is the flicker the user
+            // reported on 2026-10-30. Collapsing carries the same lag and only over-paints the
+            // editor's empty padding, which is why one direction showed it and the other did not.
+            // Disabling actions for this transaction keeps AppKit's glide and refuses the second
+            // interpolation: 0.0 pt worst lag at every sample of every phase afterwards, with the
+            // eased path unchanged. `DiagnosticsRevealClockTests` fails on the installed actions.
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            // The other half of the same complaint. The divider shrinks this pane every frame -- measured
+            // 524 → 294 pt of hint width across one travel -- so the trigger description re-wrapped in the
+            // middle of the slide. Told to wrap at the width it will have when the divider arrives, its
+            // layout is decided once, before the travel, and the only thing that moves is the edge.
+            let editorRightNow = editor.view.superview?.frame.maxX ?? target
+            editor.freezeHintWrapWidth(forContainerWidth: editor.view.bounds.width + (target - editorRightNow))
+            NSAnimationContext.runAnimationGroup({ context in
                 context.duration = MotionPlan.dividerDuration
                 context.timingFunction = Self.dividerTiming
                 context.allowsImplicitAnimation = true
                 move()
-            }
+            }, completionHandler: { [weak self] in
+                self?.editor.releaseHintWrapWidth()
+            })
+            CATransaction.commit()
         } else {
+            editor.releaseHintWrapWidth()
             move()
             split.layoutSubtreeIfNeeded()
         }

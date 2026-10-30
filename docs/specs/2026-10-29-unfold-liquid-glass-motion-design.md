@@ -249,6 +249,62 @@ asserts the collapse *target* geometry (the pane lands at its `minimumThickness`
 `diagnosticsExpandedWidth`) and the flip of the collapse flag, and the smoothness of the travel is a live-pass
 observation.
 
+**The second clock (measured 2026-10-30, user report: *"the diagnostic panel flickering when expanding
+outward but inward doesn't"*, pointed at the band between the editor's right edge and the panel's left
+edge).** `allowsImplicitAnimation` is what drives the divider at all -- with it off, the pane snaps to its
+final rect with no travel -- but every frame change that travel makes also handed Core Animation an implicit
+action on the split item's wrapper (`_NSSplitViewItemViewWrapper.position` and `.bounds`), so the pane was
+interpolated twice. Sampled at 2 ms on the live window, the wrapper's **presentation** rect lagged its
+**model** rect by up to 21.4 pt mid-travel, and by 226.4 pt on the first expansion, whose collapsed wrapper
+is parked at the open rect and paints fully open the instant it is un-hidden. Expanding, that gap is a hole
+between the editor's laid-out trailing edge and the panel's painted leading edge; collapsing, the same lag
+only over-paints the editor's empty trailing padding -- which is precisely the one-directional flicker
+reported. The reveal now opens a `CATransaction` with `setDisableActions(true)` around the group: AppKit's
+glide is kept, the second interpolation is refused, and the worst lag measures 0.0 pt at every sample of
+every phase. `DiagnosticsRevealClockTests` fails on the installed actions, which the harness *can* see even
+though it cannot pump the glide. Ruling AL: one motion may have one interpolator -- an `NSAnimationContext`
+that drives model frames per frame is already a clock, and implicit layer actions on top of it paint the
+element somewhere other than where it is laid out.
+
+**The reveal uncovers the content; it does not move it (measured 2026-10-30, same report).** Removing the
+second clock did not stop the flicker, and recording the live window frame by frame showed why: the panel's
+content was **cut off at the window's right edge** mid-travel -- "Run consistency t...", "Tap switched off by
+mac..." -- sliding left into place as the pane opened. The cause was arithmetic, not timing: the button floor
+was 190 pt, and with the glass's 8 pt padding and the stack's 16 pt insets the content's minimum was
+**238 pt in a 230 pt pane**. A constraint set that cannot be satisfied at the width the pane opens to is
+resolved by AppKit breaking a pin, and which pin it breaks shifts as the container narrows -- the gap
+between the divider and the cluster's left edge measured 24 → 36 → 28 → 34 pt across one travel. The floor
+is now *derived* from the pane width (`contentMinimumWidth − 2·inset − 2·padding`), so the content fits
+exactly at rest. Ruling AM: a reveal that moves an element's *frame* must not also re-layout its content --
+give the content a pose that does not change and let the edge travel past it.
+
+**Where the content's pose is pinned to (measured 2026-10-30 with a per-frame probe inside the app).** Fixing
+the arithmetic was not enough, because the pin was on the wrong view. AppKit gives a split item's own view
+the item's **full thickness** and parks it at the divider: mid-travel the wrapper is the visible pane
+(`884...900` on a 900 pt split) while the pane's view is `884...1114` -- its trailing edge is 214 pt off the right
+of the window. A stack pinned to that edge rides the divider, hangs every title off the window's right edge,
+and snaps into place over the last frames of the travel. So the horizontal pin is made against the **split
+view's** trailing edge, which sits on the window's edge at every sample, and the clip belongs on the
+split-item wrapper -- the container cannot clip, because the content now lies partly outside it. Measured
+after: the content's window-space rect is `670...900` at **every** sample of the travel, against
+`884...1114 → 670...900` before. This also corrects the note left by `431ea1d`, which attributed the earlier
+overflow to `NSGlassEffectView` compositing outside a plain view's bounds-clip: that was a guess, and the
+actual reason the container's clip never cut anything off is that the container *moves* rather than resizes.
+
+**The second transform (measured 2026-10-30, user report: *"still flickering, specifically with the trigger
+description text, i think those 2 transformation are conflicting with each other"*).** With the panel's own
+geometry still, the editor's hint was still moving: the divider shrinks the editor every frame and the hint's
+frame width measured **524 → 294 pt across one 280 ms travel**, so the sentence re-wrapped mid-flight (its
+needed height flipping 14 → 28 pt at the crossing). Its box never moved -- the fixed two-line slot holds 28 pt
+throughout and the text is top-anchored (`titleY = 0`) -- so the re-flow was the only motion left, and it
+collided with the slide. `EditorViewController.freezeHintWrapWidth(forContainerWidth:)` takes the hint's
+trailing pin off and pins its width to the **narrower** of where the pane is now and where it is going, for
+the duration of the group; `releaseHintWrapWidth()` restores the pin when the animation completes. Narrower
+rather than destination, because on the way home the destination is the wider of the two and a label pinned to
+it would overflow a pane that has not finished closing. `preferredMaxLayoutWidth` is *not* the lever -- the
+wrap follows the frame, not the preference, which the first attempt at this assumed. Ruling AN: one motion may
+re-flow text at most once, and not while it is travelling.
+
 **First-expansion pose (measured 2026-10-30, user report: *"the initial expanding ... it doesnt just slide out,
 it flew from the left side awkwardly, after that it expand normal smoothly"*).** An `NSSplitViewItem` inserted
 already collapsed is first laid out at the **leading** edge: launch-closed, the Diagnostics wrapper measured
