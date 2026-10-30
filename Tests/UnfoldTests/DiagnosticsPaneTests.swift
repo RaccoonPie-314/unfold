@@ -58,4 +58,49 @@ final class DiagnosticsPaneTests: XCTestCase {
                               + "MainWindowController — the button would do nothing")
         }
     }
+
+    /// The reveal must slide the pane out, not crush it.
+    ///
+    /// The button stack used to be pinned to both edges of the pane container, so it was exactly as wide
+    /// as the container -- and the container narrows toward 0 while the Diagnostics divider travels. Every
+    /// title therefore re-wrapped or truncated somewhere in the middle of that travel, which is the
+    /// "left side of that panel is glitchy, not as smooth when expanding outward" the user reported on
+    /// 2026-10-30: growing hands the content more room than it needs and stays clean, shrinking takes it
+    /// away and reflows. The stack now carries its designed width with a trailing pin, and the container
+    /// clips.
+    func testThePaneSlidesOutInsteadOfBeingCrushed() {
+        _ = NSApplication.shared
+        let pane = DiagnosticsViewController()
+        pane.loadViewIfNeeded()
+        let container = pane.view
+        // The **pane's** stack -- the one whose width the divider used to control -- not the button
+        // cluster inside the glass, which is what `containerForMotionProbe` hands out.
+        let stack = try! XCTUnwrap(container.subviews.compactMap { $0 as? NSStackView }.first,
+                                  "the pane container has no stack view to measure")
+
+        XCTAssertTrue(container.clipsToBounds,
+                      "a fixed-width stack inside a narrowing container needs something that cuts it off; "
+                          + "without the clip the buttons hang over the editor pane for the travel")
+
+        // Squeeze the container the way the divider does on the way in -- with a real constraint, because
+        // `setFrameSize` on the pane's own view is simply undone by the next layout pass.
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 90, height: 400))
+        container.translatesAutoresizingMaskIntoConstraints = false
+        host.addSubview(container)
+        NSLayoutConstraint.activate([
+            container.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+            container.trailingAnchor.constraint(equalTo: host.trailingAnchor),
+            container.topAnchor.constraint(equalTo: host.topAnchor),
+            container.bottomAnchor.constraint(equalTo: host.bottomAnchor),
+        ])
+        host.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(container.frame.width, 90, accuracy: 0.5, "the fixture is not squeezing the pane")
+        XCTAssertEqual(stack.frame.width, MainWindowController.diagnosticsExpandedWidth, accuracy: 0.5,
+                       "the stack is \(stack.frame.width) pt inside a 90 pt pane — it is being squeezed "
+                           + "to the pane's width again, which is the reflow that made retracting jitter")
+        XCTAssertEqual(stack.frame.maxX, container.frame.maxX, accuracy: 0.5,
+                       "the stack is not trailing-pinned, so a narrowing pane slides it sideways instead "
+                           + "of clipping its leading edge")
+    }
 }
